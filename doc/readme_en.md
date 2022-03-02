@@ -1,15 +1,14 @@
 
 # pong-go
 
+
 - [中文](https://github.com/pingworlds/pong/README.md)
 - [English](https://github.com/pingworlds/pong/doc/readme_en.md)
 
+pong-go is a golang language implementation of the pong proxy protocol.
 
 
-pong-go 是 pong 代理协议的 golang 语言实现。
-
-
-## 关联项目
+## Associated Projects
 
 - pong-protocol 
   
@@ -29,41 +28,41 @@ pong-go 是 pong 代理协议的 golang 语言实现。
   pong protocol android app <https://github.com/pingworlds/ping>
 
 
-## 安装
+## install
 
 
-下载最新编译版 <https://github.com/pingworlds/pong/releases>
+Download the latest compiled version <https://github.com/pingworlds/pong/releases>
 
 
 
 ## pong proxy protocol
 
-pong 是一种结合了socks5与http2特性的代理协议，支持在一条网络连接上多路复用同时并发数十数百个代理请求。
+pong is a proxy protocol that combines the features of socks5 and http2 to support multiplexing tens of hundreds of proxy requests on a single network connection at the same time.
 
-pong协议的优势：
+Advantages of the pong protocol.
 
-- 避免“连接阻塞”
+- Avoid "connection blocking"
  
-因为安全和隐私保护需要，代理服务通常放置在web server之后，
+For security and privacy reasons, proxy services are usually placed after the web server
 
     src <---> proxy-local <---> web server <---> proxy server <---> dst 
 
-web server对单一客户端有着最大并发连接数限制，一般不会超过10，打开一个新闻/图片网站首页往往需要并发50-100个代理请求，连接数耗尽瞬间耗尽，后续代理请求排队等待连接释放，于是发生客户端卡顿假死，通常只能重启客户端来强制释放连接。
+web server has a maximum concurrent connection limit for a single client, generally not more than 10, open a news / picture site home page often requires concurrent 50-100 proxy requests, the number of connections exhausted instantly exhausted, the subsequent proxy requests queued for connection release, so the client stalled false death, usually only restart the client to force the release of the connection.
 
-在90%以上的时间里，一个pong客户端只需要维持一个网络连接，可以有效避免“连接阻塞”导致的卡顿。
+In more than 90% of the time, a pong client only needs to maintain a network connection, which can effectively avoid the "connection blocking" caused by the lag.
   
-- 0 open 时间 
+- 0 open time 
   
-因为是在一条已经打开的网络连接上并发代理，无需耗费时间去为每个代理请求打开网络连接和握手验证，收到代理请求会立即转发，速度上pong会优于其它协议。
+Because it is a concurrent proxy on an open network connection, there is no need to spend time to open the network connection and handshake authentication for each proxy request, and proxy requests are forwarded immediately upon receipt, making pong faster than other protocols.
 
-关于pong协议的细节，请参阅 <https://github.com/pingworlds/pong-protocol>
+For more details on the pong protocol, see <https://github.com/pingworlds/pong-protocol>
 
 
 
 
 ## transport protocols
 
-pong-go 支持以下网络标准协议作为传输协议：
+pong-go supports the following network standard protocols as transport protocols.
 - tcp
 - tls
 - http
@@ -77,52 +76,52 @@ pong-go 支持以下网络标准协议作为传输协议：
 
 ## proxy protocols
 
-pong-go 同时支持以下代理协议
+pong-go also supports the following proxy protocols
 - pong
 - shadowsokcs 
 - vless
 - socks5
-- qsocks (没有握手过程的精简版socks5)
+- qsocks (a lite version of socks5 without the handshake process)
 
-注意：所有代理协议，仅支持明文
+Note: All proxy protocols, only plaintext is supported
 
 
-## 启动
+## startup
 
-pong-go 启动参数
+pong-go startup parameters
 
     -c string
         config file, remote mode defalut config file is "remote.json" ,local mode default config file is "local.json"
     -d string
-        work dir (default "./")
+        work dir (default ". /")
     -m string
         run mode: local or remote (default "remote")
 
 
 
-## local 模式
+## local mode
 
-部署运行在本地网络环境，或者作为平台代理客户端的pong协议实现库。
+running in a local network environment, or as a platform proxy client.
 
-### 启动 local
+### Start local
 
-    $ pong  -m local -d  $workdir
+    $ pong -m local -d $workdir
 
-    会在 $workdir 目录下寻找文件 "local.json"
+    will look for the file "local.json" in the $workdir directory
 
 
     or
 
-    $ pong  -m local -d  $workdir  -c  $config.json
+    $ pong -m local -d $workdir -c $config.json
 
 
 
-### local 配置
+### local configuration
 
-主要内容包括一个socks5/qsocks监听服务，一组远程节点，一些可选的运行参数以及代理规则
+The main elements include a socks5/qsocks listening service, a set of remote nodes, some optional runtime parameters, and proxy rules
 
     {
-        "listens": [
+        "listeners": [
             {
                 "transport": "tcp",
                 "host": ":11984",
@@ -148,12 +147,12 @@ pong-go 启动参数
 
 
 
-## remote 模式
+## remote mode
 
-remote 部署在远程代理服务器，下面是一个隐藏在web server之后的pong节点配置
+The remote is deployed on a remote proxy server, and the following is a pong node configuration hidden behind the web server
 
     { 
-        "listens": [
+        "listeners": [
             {
                 "transport": "h2c",
                 "host": "127.0.0.1:21984",
@@ -167,26 +166,26 @@ remote 部署在远程代理服务器，下面是一个隐藏在web server之后
 
 
 
-### 启动 remote
+### Start remote
 
-    pong  -d  $workdir
+    pong -d $workdir
 
-    会在 $workdir 目录下寻找文件 "remote.json"
+    will look for the file "remote.json" in the $workdir directory
 
 
     or
 
-    pong  -m remote -d $workdir  -c  $config.json
+    pong -m remote -d $workdir -c $config.json
 
 
 
-## 配置文件
+## Configuration files
 
-配置文件的核心内容是节点，一个节点称为一个point或者一个peer,包括以下字段
+The core content of the configuration file is the node, a node is called a point or a peer, and includes the following fields
 
-### 必须字段
+### Required fields
 
-#### protocol  string  
+#### protocol string  
 
 pong,vless,socks,ss,qsocks
 
@@ -196,44 +195,44 @@ pong,vless,socks,ss,qsocks
 h3,h2,h2c,http,https,ws,wss,tcp,tls
 
 
-#### host      string
+#### host string
 
-网络地址，域名或IP地址，IP地址需要包括端口号
+Network address, domain name or IP address, IP address needs to include the port number
 
 
-### 可选字段
+### Optional fields
 
-#### path         string
+#### path string
     
-http入口路径，尽量使用随机字符的深层长路径，以避免被恶意探测
+http entry path, try to use a deep long path with random characters to avoid malicious probes
 
 
-#### clients      []string
+#### clients []string
 
-一组客户端Id，必须是合法的16字节的uuid，pong/vless用于鉴别客户端的合法性
+A set of client Id, must be a legitimate 16-byte uuid, pong/vless is used to identify the legitimacy of the client
     
 #### ssl  
-	certFile     string    
-	keyFile      string
-	sni          string 
-	insecureSkip bool   //是否跳过证书验证
+	certFile string    
+	keyFile string
+	sni string 
+	insecureSkip bool //whether to skip certificate validation
 
 
-#### disabled     bool
+#### disabled bool
 
-临时禁用节点
+Temporarily disable the node
 
 
 
 ## web server
 
 
-与 caddy,nginx 等 web server 配合设置，请参考 <https://github.com/pingworlds/pong-congfig-example>
+Set with caddy,nginx and other web servers, please refer to <https://github.com/pingworlds/pong-congfig-example>
 
 
-## local 高级
+## local advanced
 
-相对于remote模式，local模式下支持更多参数配置
+Compared with remote mode, local mode supports more parameters
 
     "autoTry": true,
     "rejectMode": true,
@@ -242,105 +241,103 @@ http入口路径，尽量使用随机字符的深层长路径，以避免被恶�
     "perMaxCount": 100,  
 
 
-### autoTry  bool
+### autoTry bool
 
-直连失败的域名或IP,自动尝试远程代理。
+Automatically try remote proxies for domains or IPs that fail to connect directly.
 
-该选项开启后，理论上不再需要其它规则,同时开启或许效果更佳。
-
-
-### rejectMode  bool
-
-根据拦截名单拦截广告等
+When this option is turned on, theoretically no other rules are needed, but it may be better to turn it on at the same time.
 
 
-### domainMode  string
+### rejectMode bool
 
-可选值
-
--  "proxy"  //全部代理
--  "direct" //全部直连
--  "white"  //白名单直连，其余代理，黑名单例外
--  "black"  //黑名单代理，其余直连，白名单例外
+Block ads, etc. based on a block list.
 
 
-例外表示一个域名或ip在白、黑名单中同时存在的情形
+### domainMode string
+
+Optional values
+
+- "proxy" //all proxies
+- "direct" //all direct connections
+- "white" //white list direct, rest proxy, black list exception
+- "black" //blacklist proxy, rest direct, whitelist exceptions
+
+
+Exceptions indicate that a domain or ip exists in both the white and black lists
 
 
 
 ### ipMode string
 
-同 domainMode
+Same as domainMode
 
 
 
 ### perMaxCount
 
-一条网络连接支持的最大并发代理请求数量, 默认值 100，超过此值，会新打开一条连接，空闲的网络连接会自动断开
+The maximum number of concurrent proxy requests supported by a network connection, default value 100, beyond this value, a new connection will be opened and the idle network connection will be automatically disconnected
 
 
 ### rule
 
-按域名和ip分别设置规则，规则文件必须位于 $workDir 目录。
+Set rules by domain and ip, rules file must be located in $workDir directory.
 
-domain rule  位于  $workDir/domain/ 
+The domain rule is located in $workDir/domain/ 
 
-ip rule 位于 $workDir/ip/ 
+ip rule is located in $workDir/ip/ 
 
 
-rule 通用配置字段
+rule General configuration fields
 
 - type
   
-  名单类型，"white","black","reject" 分别表示白名单，黑名单，拦截名单
+  list type, "white", "black", "reject" means white list, black list, block list respectively
 
 - name
   
-  配置项名称
+  Configuration item name
 
 - fileName
   
-  文件名
+  File name
 
 - url
   
-  来源
+  source
 
 - disable
  
-  禁用  false or true
+  Disable false or true
 
 
-样例
+Example
 
     {
-        "name": "reject-list",
-        "fileName": "reject-list.txt",      
-        "type": "reject"
+        "name": "project-list",
+        "fileName": "project-list.txt",      
+        "type": "project"
     }
 
  
 
-####  domain rule
+#### domain rule
 
-domain rule 文件每行一条规则,三种格式:
+The domain rule file has one rule per line, in three formats:
 
-- 范域名
+- Domain name
     
-        google.com          //匹配   *.google.com.*
+        google.com // match *.google.com.*
 
-- 域名
+- domain name
   
-        full:www.apple.com  //精确匹配  www.apple.com
+        full:www.apple.com //exact match www.apple.com
 
-- 正则表达式
+- Regular expressions
   
         regexp:^ewcdn[0-9]{2}\.nowe\.com$
 
 
-
-
-在配置文件中添加一组域名规则
+Add a set of domain rules to the configuration file
 
     "domainRules": [
         {
@@ -387,14 +384,13 @@ domain rule 文件每行一条规则,三种格式:
         }
     ]
 
-  
 
 
-#### ip 规则
+#### ip rule
 
-格式：1.0.32.0/19
+Format: 1.0.32.0/19
 
-在配置文件中添加一组ip规则
+Add a set of ip rules to the configuration file
 
     "ipRules": [
         {
@@ -409,18 +405,19 @@ domain rule 文件每行一条规则,三种格式:
 
 ## aar
 
-pong-go 可以使用 gomobile bind 命令编译成 aar 文件作为平台客户端的第三方库使用。
-
-ping <https://github.com/pingworlds/ping>   
+pong-go can be compiled into an aar file using the gomobile bind command to be used as a third-party library for the platform client.
 
 
-### doh 服务
 
-注： doh服务受限于网络环境，速度并不理想，慎用。
+### doh service
 
-作为平台客户端库使用时，可能会需要 dns 功能，pong-go内置了doh 功能，简化平台客户端doh功能的开发。
+Note: doh service is limited by the network environment, the speed is not ideal, so use it carefully.
 
-一组可用的doh 服务列表
+When used as a platform client library, you may need the dns function. pong-go has a built-in doh function to simplify the development of the platform client doh function.
+
+A list of available doh services
+
+
 
     "workDohs": [
         {

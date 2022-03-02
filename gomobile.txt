@@ -1,0 +1,6 @@
+
+go install golang.org/x/mobile/cmd/gomobile@latest
+
+gomobile init
+
+gomobile bind -v -o  ./dist/pong-0.90.aar -target android  -javapkg com.github.pingworlds.pong  github.com/pingworlds/pong/service
