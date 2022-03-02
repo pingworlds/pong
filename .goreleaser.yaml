@@ -20,7 +20,7 @@ builds:
       - 386
       - arm
       - arm64  
-    # goarm:
+    goarm:
       - 5
       - 6
       - 7   
