@@ -1,8 +1,8 @@
 
 # pong-go
 
-- [中文](https://github.com/pingworlds/pong/README.md)
-- [English](https://github.com/pingworlds/pong/doc/readme_en.md)
+- [中文](README.md)
+- [English](doc/readme_en.md)
 
 
 
