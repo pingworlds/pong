@@ -1,7 +1,7 @@
 
 # pong-go
 
-- [中文](README.md)
+- [中文](../README.md)
 - [English](doc/readme_en.md)
 
 pong-go is a golang language implementation of the pong proxy protocol.
