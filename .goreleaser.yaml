@@ -13,13 +13,14 @@ builds:
       - linux
       - darwin
       - windows
+      # - freebsd
       - openbsd  
     goarch:
       - amd64
       - 386
       - arm
       - arm64  
-    goarm:
+    # goarm:
       - 5
       - 6
       - 7   
@@ -34,12 +35,13 @@ builds:
         goarch: arm64
 
 archives:
+   
   - replacements:  
       386: i386   
     format_overrides:
       - goos: windows
         format: zip 
-
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: 'checksums.txt'
