@@ -25,6 +25,7 @@ type config struct {
 	AutoTry        bool
 	AutoOrderPoint bool
 	PerMaxCount    int
+	WriteBuffer    int
 }
 
 func (c config) String() string {

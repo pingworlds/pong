@@ -1,0 +1,15 @@
+[Unit]
+Description=pong service
+Documentation=https://github.com/pingworlds/pong
+After=network.target network-online.target nss-lookup.target
+
+[Service]
+Type=simple
+StandardError=journal
+ExecStart=/usr/bin/pong -d /usr/local/pong
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

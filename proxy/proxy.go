@@ -468,7 +468,7 @@ func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
 
 	t1 := time.Now().UnixMilli()
 	t.Connected = true
-
+	 
 	go func() {
 		n, err := io.Copy(t.Dst, t.Src)
 		// log.Printf("src    ->    dst  %d  bytes\n", n)
@@ -521,18 +521,19 @@ func (c *container) Start() {
 	} else if t < 3 {
 		t = 3
 	}
+	t = 3
 	loopTime := t * time.Second
 	c.OnStart()
 	go func() {
 		tiker := time.NewTicker(loopTime)
-		autoTiker := time.NewTicker(3 * time.Minute)
+		autoTiker := time.NewTicker(3 * 60 * time.Second)
 		var st *Stat
-		var i = 0
+
 		defer func() {
 			tiker.Stop()
 			autoTiker.Stop()
 		}()
-
+		var i = 0
 		for {
 			select {
 			case <-c.ctx.Done():

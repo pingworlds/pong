@@ -37,28 +37,44 @@ const (
 
 	CONN_CREATE byte = 1
 	CONN_CLOSED byte = 3
+
+	STATUS_NORMAL  = 0
+	STATUS_CLOSING = 1
+	STATUS_CLOSED  = 2
 )
 
 var Per_Max_Count int = 100
-var Conn_TimeOut int64 = 1 * 60 * 1000
-var Stream_Idle_Time time.Duration = 2 * time.Minute
-var Stream_Close_Timeout time.Duration = 3 * time.Second
-var Peek_Time = 2 * 60 * time.Second
+var Conn_TimeOut int64 = 1 * 60
+var Stream_Idle_TimeOut int64 = 5 * 60
+var Stream_Close_Time time.Duration = 3
+var Peek_Time time.Duration = 30
 
-// var Max_Live_Time = 1 * 60 * time.Minute
-
-var Frame_Buf_Size uint16 = 3072
+var Frame_Buf_Size uint16 = 8192
+var cfg = config.Config
 
 func NewPong(p *proxy.Proto) pong {
-	if config.Config != nil && config.Config.PerMaxCount > 10 {
-		Per_Max_Count = config.Config.PerMaxCount
+
+	if cfg != nil {
+		if cfg.PerMaxCount < 10 {
+			Per_Max_Count = cfg.PerMaxCount
+		} else if cfg.PerMaxCount > 300 {
+			Per_Max_Count = 300
+		}
+
+		if cfg.WriteBuffer > 2048 {
+			Frame_Buf_Size = uint16(cfg.WriteBuffer)
+		}
 	}
-	return pong{Proto: p, connPool: &connPool{conns: []*pongConn{}}}
+	pg := pong{Proto: p, connPool: &connPool{conns: []*pongConn{}}}
+	go pg.start()
+	return pg
 }
 
 type connPool struct {
-	conns []*pongConn
-	mu    sync.Mutex
+	conns  []*pongConn
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (cp *connPool) Put(pc *pongConn) {
@@ -87,27 +103,63 @@ func (cp *connPool) Remove(id string) {
 
 func (cp *connPool) GetIdle() (pc *pongConn) {
 	for _, c := range cp.conns {
-		if c.closed {
+		if c.closing {
 			continue
 		}
-		if pc == nil || len(pc.streams) > len(c.streams) {
+		if Per_Max_Count > len(c.streams) {
 			pc = c
-		}
-		if len(pc.streams) <= 50 {
 			break
 		}
-	}
-	if pc != nil && len(pc.streams) > Per_Max_Count {
-		pc = nil
 	}
 	return
 }
 
-func (cp *connPool) ReleaseAll() {
+func (cp *connPool) close() {
 	for _, c := range cp.conns {
-		c.release()
+		c.CloseWithCode(proxy.ERR_FORCE_CLOSE)
 	}
-	cp.conns = cp.conns[:0]
+	if cp.cancel != nil {
+		cp.cancel()
+	}
+}
+func (cp *connPool) start() {
+	tiker := time.NewTicker(Peek_Time * time.Second)
+	defer tiker.Stop()
+	cp.ctx, cp.cancel = context.WithCancel(context.Background())
+	for {
+		select {
+		case <-cp.ctx.Done():
+			return
+		case <-tiker.C:
+			t1 := time.Now().UnixMilli()
+			for _, pc := range cp.conns {
+				if pc.closing {
+					continue
+				}
+				if len(pc.streams) <= 0 {
+					if pc.idling {
+						dt := (t1 - pc.idleTime) / 1000
+						if dt > Conn_TimeOut {
+							pc.CloseWithCode(proxy.ERR_CONN_TIMEOUT)
+							log.Printf("raw connection released (idle %d second)\n", dt)
+						}
+					} else {
+						pc.idling = true
+						pc.idleTime = t1
+					}
+				} else {
+					pc.idling = false
+					for _, s := range pc.streams {
+						dt := min(t1-s.lastRead, t1-s.lastWrite) / 1000
+						if dt > Stream_Idle_TimeOut {
+							s.CloseWithError(proxy.ERR_CONN_TIMEOUT)
+							log.Printf("stream[%d]released (idle %d second)(%s)", s.id, dt, s.t.Addr)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 type pong struct {
@@ -211,7 +263,7 @@ func (p *pong) NewPongConn(conn net.Conn, ver byte, do proxy.Do, isLocal bool) *
 }
 
 func (p *pong) Close() error {
-	p.connPool.ReleaseAll()
+	p.connPool.close()
 	return nil
 }
 
@@ -225,21 +277,31 @@ func (p *pong) Stat() *proxy.PointStat {
 
 type pongConn struct {
 	net.Conn
-	id      string
-	rbuf    []byte
-	wbuf    []byte
-	streams map[uint32]*stream
-	p       *pong
-	Do      proxy.Do
-	closed  bool
-	// old     bool
-	created int64
-	isLocal bool
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wmu     sync.Mutex
-	smu     sync.Mutex
-	n       uint32
+	id       string
+	rbuf     []byte
+	wbuf     []byte
+	streams  map[uint32]*stream
+	p        *pong
+	Do       proxy.Do
+	closing  bool
+	errCode  byte
+	isLocal  bool
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wmu      sync.Mutex
+	smu      sync.Mutex
+	n        uint32
+	created  int64
+	idleTime int64
+	idling   bool
+}
+
+func (pc *pongConn) NextId() (n uint32) {
+	pc.smu.Lock()
+	defer pc.smu.Unlock()
+	n = pc.n
+	pc.n += 2
+	return
 }
 
 func (pc *pongConn) Put(sid uint32, s *stream) {
@@ -256,7 +318,7 @@ func (pc *pongConn) Get(sid uint32) *stream {
 
 func (pc *pongConn) Remove(sid uint32) {
 	go func() {
-		time.AfterFunc(Stream_Close_Timeout, func() {
+		time.AfterFunc(Stream_Close_Time*time.Second, func() {
 			pc.smu.Lock()
 			defer pc.smu.Unlock()
 			delete(pc.streams, sid)
@@ -272,8 +334,7 @@ func (pc *pongConn) NewStream(id uint32, t *proxy.Tunnel) *stream {
 	return s
 }
 func (pc *pongConn) OpenStream(t *proxy.Tunnel) *stream {
-	pc.n += 2
-	s := pc.new(pc.n, t)
+	s := pc.new(pc.NextId(), t)
 	t.Dst = s
 	t.DstPeer = pc.p
 	pc.p.OnTunnelOpen(t)
@@ -283,22 +344,25 @@ func (pc *pongConn) OpenStream(t *proxy.Tunnel) *stream {
 func (pc *pongConn) new(id uint32, t *proxy.Tunnel) *stream {
 	ctx, cancel := context.WithCancel(pc.ctx)
 	pr, pw := io.Pipe()
+	tt := time.Now().UnixMilli()
 	s := &stream{
-		id:     id,
-		t:      t,
-		pc:     pc,
-		pw:     pw,
-		pr:     pr,
-		frmCh:  make(chan *frame, 50),
-		ctx:    ctx,
-		cancel: cancel,
+		id:        id,
+		t:         t,
+		pc:        pc,
+		pw:        pw,
+		pr:        pr,
+		frmCh:     make(chan *frame, 50),
+		ctx:       ctx,
+		cancel:    cancel,
+		lastRead:  tt,
+		lastWrite: tt,
 	}
 	pc.Put(s.id, s)
 	go s.Listen()
 	return s
 }
 
-func min(a, b time.Duration) time.Duration {
+func min(a, b int64) int64 {
 	if a > b {
 		return b
 	}
@@ -306,93 +370,54 @@ func min(a, b time.Duration) time.Duration {
 }
 
 func (pc *pongConn) Listen() {
-	var err error
-	tiker := time.NewTicker(Peek_Time)
-	defer func() {
-		tiker.Stop()
-		if err == io.EOF {
-			err = nil
-		}
-		pc.CloseWithError(err)
-	}()
-	go func() {
-		for {
-			if pc.closed {
-				return
-			}
-			if err = pc.ReadFrame(); err != nil {
-				log.Println(err)
-				return
-			}
-		}
-	}()
-
-	var t int64
-	idling := false
 	for {
 		select {
 		case <-pc.ctx.Done():
 			return
-		case <-tiker.C:
-			if pc.closed {
+		default:
+			if err := pc.ReadFrame(); err != nil {
+				pc.CloseWithError(err)
 				return
 			}
-			t2 := time.Now().UnixMilli()
-			if len(pc.streams) <= 0 {
-				if idling {
-					idle := t2 - t
-					if idle > Conn_TimeOut {
-						log.Printf("raw connection released (idle %d second)\n", idle/1000)
-						return
-					}
-				} else {
-					idling = true
-					t = t2
-				}
-			} else {
-				idling = false
-				for _, s := range pc.streams {
-					if min(time.Duration(t2-s.lastRead), time.Duration(t2-s.lastWrite)) > Stream_Idle_Time {
-						s.CloseWithError(proxy.ERR_CONN_TIMEOUT)
-					}
-				}
-			}
-
 		}
 	}
 }
 
 func (pc *pongConn) Close() error {
-	pc.CloseWithError(nil)
+	pc.CloseWithCode(0)
 	return nil
 }
 
 func (pc *pongConn) CloseWithError(err error) {
-	pc.release()
+	pc.CloseWithCode(proxy.GetErrorCode(err, proxy.ERR_DST))
+}
+
+func (pc *pongConn) CloseWithCode(code byte) {
+	if pc.closing {
+		return
+	}
+	pc.closing = true
+	pc.errCode = code
+	log.Printf("raw conn close (code=%d)", code)
+	pc.Release()
+	pc.cancel()
 	pc.p.Remove(pc.id)
 }
 
-func (pc *pongConn) release() {
-	if pc.closed {
-		return
-	}
-	pc.closed = true
-	pc.cancel()
+func (pc *pongConn) Release() {
 	for _, s := range pc.streams {
-		s.CloseWithError(proxy.ERR_FORCE_CLOSE)
+		s.CloseWithError(pc.errCode)
 	}
 }
 
 func (pc *pongConn) writeOne(sid uint32, ftype byte, b []byte) (n int, err error) {
 	pc.wmu.Lock()
 	defer pc.wmu.Unlock()
-
-	if pc.closed {
-		err = fmt.Errorf("raw connection closed")
+	if pc.closing {
+		err = fmt.Errorf("on writeOne raw connection closed")
 		return
 	}
 	n = 2 + 4 + 1 + len(b)
-
 	_ = append(pc.wbuf[:0],
 		byte(n>>8),
 		byte(n),
@@ -404,14 +429,12 @@ func (pc *pongConn) writeOne(sid uint32, ftype byte, b []byte) (n int, err error
 	if len(b) > 0 {
 		_ = copy(pc.wbuf[7:], b)
 	}
-
 	return pc.Conn.Write(pc.wbuf[:n])
 }
 
 func (pc *pongConn) WriteRaw(sid uint32, ftype byte, payload []byte) (n int, err error) {
-	if pc.closed {
+	if pc.closing {
 		err = fmt.Errorf("raw connection closed on writing")
-		log.Println(err)
 		return
 	}
 	n = len(payload)
@@ -442,7 +465,7 @@ func (pc *pongConn) ReadFrame() error {
 	}
 	n := binary.BigEndian.Uint16(pc.rbuf[0:2])
 	if n < HEADER_LEN {
-		return fmt.Errorf("bad frame too short")
+		return fmt.Errorf("frame too short")
 	}
 	sid := binary.BigEndian.Uint32(pc.rbuf[2:6])
 	ftype := pc.rbuf[6]
@@ -452,6 +475,10 @@ func (pc *pongConn) ReadFrame() error {
 		if s != nil {
 			s.CloseWithError(proxy.ERR_REPEAT_ID)
 			return nil
+		}
+
+		if n > 128 {
+			return fmt.Errorf("dst address too long (%d > 128)", n)
 		}
 
 		b := *kit.Byte128.Get().(*[]byte)
@@ -475,11 +502,10 @@ func (pc *pongConn) ReadFrame() error {
 		if s == nil || s.closed {
 			if s != nil {
 				s.CloseWithError(proxy.ERR_CONN_TIMEOUT)
-				log.Printf("stream[%d] %s is closed, frame ignored", sid, s.t.Addr)
+				log.Printf("frame ignored, stream[%d] is released (%s)", sid, s.t.Addr)
 			} else {
-				log.Printf("stream[%d] not exsit, frame ignored", sid)
+				log.Printf("frame ignored, stream[%d] not exsit", sid)
 			}
-
 			if n > 0 {
 				if _, err = io.CopyN(ioutil.Discard, pc.Conn, int64(n)); err != nil {
 					return err
@@ -491,13 +517,13 @@ func (pc *pongConn) ReadFrame() error {
 		if ftype == FRAME_DATA {
 			var m uint16
 			var i uint16
+
 			for i = 0; i < n; {
 				m = Frame_Buf_Size
 				if i+m > n {
 					m = n - i
 				}
 				f := Frames.NewDataFrame(sid, m)
-
 				if _, err = io.ReadFull(pc.Conn, f.buf[0:m]); err != nil {
 					return err
 				}
@@ -541,21 +567,27 @@ type stream struct {
 }
 
 func (s *stream) Read(b []byte) (n int, err error) {
-	s.lastRead = time.Now().UnixMilli()
 	if s.closed {
-		s.pr.CloseWithError(io.EOF)
-		return
+		return 0, fmt.Errorf("read error, stream is closed")
 	}
+	s.lastRead = time.Now().UnixMilli()
 	return s.pr.Read(b)
 }
 
 func (s *stream) Write(b []byte) (n int, err error) {
+	if s.closed {
+		return 0, fmt.Errorf("write error, stream is closed")
+	}
 	s.lastWrite = time.Now().UnixMilli()
-	return s.pc.WriteRaw(s.id, FRAME_DATA, b)
+	return s.WriteRaw(FRAME_DATA, b)
+}
+
+func (s *stream) WriteRaw(ftype byte, payload []byte) (n int, err error) {
+	return s.pc.WriteRaw(s.id, ftype, payload)
 }
 
 func (s *stream) Finish() error {
-	_, err := s.pc.WriteRaw(s.id, FRAME_FINISH, nil)
+	_, err := s.WriteRaw(FRAME_FINISH, nil)
 	return err
 }
 
@@ -580,6 +612,7 @@ func (s *stream) Close() error {
 	s.closed = true
 	s.release()
 	s.pc.Remove(s.id)
+	// log.Printf("stream[%d] released (%s)", s.id, s.t.Addr)
 	return nil
 }
 
@@ -601,9 +634,10 @@ func (s *stream) UnlockClose(code byte) {
 	if s.t != nil {
 		s.t.AddError(err, "")
 	}
-	log.Printf("stream[%d] %s closed with error, code:%d  %s\n", s.id, s.t.Addr, code, err.Error())
-	s.pc.WriteRaw(s.id, FRAME_RST, payload)
+	s.WriteRaw(FRAME_RST, payload)
 	s.release()
+	log.Printf("stream[%d] released with error %s (%s)", s.id, err.Error(), s.t.Addr)
+
 }
 
 func (s *stream) release() {
@@ -615,7 +649,7 @@ func (s *stream) release() {
 
 func (s *stream) CloseByRemote(code byte) (err error) {
 	err = fmt.Errorf("error code %d %s", code, proxy.ErrTip[code])
-	log.Printf("stream[%d] %s forcibly closed by remote, %s", s.id, s.t.Addr, err.Error())
+	log.Printf("stream[%d] forcibly release by remote, %s  (%s)", s.id, err.Error(), s.t.Addr)
 	if s.t != nil {
 		s.t.AddError(err, "")
 		log.Println(s.t.Errors)
@@ -632,8 +666,6 @@ func (s *stream) handleFrame(f *frame) (err error) {
 		Frames.PutDataFrame(f)
 	} else {
 		switch f.ftype {
-		case FRAME_DATA:
-
 		case FRAME_FINISH: //remote send data over, half close
 			s.pw.CloseWithError(io.EOF)
 		case FRAME_CLOSE:
@@ -708,7 +740,7 @@ type Local struct{ pong }
 
 func (l Local) BeforeSend(t *proxy.Tunnel) (err error) {
 	s := t.Dst.(*stream)
-	_, err = s.pc.WriteRaw(s.id, t.Method, t.Addr)
+	_, err = s.WriteRaw(t.Method, t.Addr)
 	return
 }
 

@@ -9,7 +9,7 @@ import (
 	"github.com/pingworlds/pong/xnet/transport"
 )
 
-var Dialer = &net.Dialer{Timeout: time.Second * 5}
+var Dialer = &net.Dialer{Timeout: time.Second * 10}
 
 func DialTCP(p xnet.Point) (conn net.Conn, err error) {
 	addr := p.Host

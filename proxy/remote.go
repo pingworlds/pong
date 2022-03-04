@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 
 	"github.com/pingworlds/pong/event"
 	"github.com/pingworlds/pong/xnet"
@@ -70,8 +71,8 @@ func (r *remoteCtrl) NewPeer(point xnet.Point) (p Peer, err error) {
 }
 
 func (r *remoteCtrl) NewListenPeer(point xnet.Point) (p Peer, err error) {
-	if p, err = r.NewPeer(point); err == nil {
-		r.peers[point.ID()] = p
+	if p, err = r.NewPeer(point); err == nil { 
+		r.PutPeer(point.ID(), p)
 	}
 	return
 }
@@ -81,7 +82,8 @@ func (r *remoteCtrl) readyDo(f Filter) Do {
 		defer func() {
 			if err != nil && err != io.EOF {
 				t.AddError(err, "")
-			}
+				log.Println(err)
+			}		
 			t.Close()
 		}()
 		if t.Method == CONNECT {
