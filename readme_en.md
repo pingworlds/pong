@@ -34,7 +34,7 @@ pong-go is an open source implementation of the pong proxy protocol in the golan
 
 - aar
 
-For use as a third-party library for android clients, use the gomobile bind command to compile to aar, refer to gomobile.txt(gomobile.txt)
+For use as a third-party library for android clients, use the gomobile bind command to compile to aar, refer to [gomobile.txt](gomobile.txt)
 
 
 

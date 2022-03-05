@@ -34,7 +34,7 @@ pong-go 是 pong 代理协议的 golang 语言开源实现。
 
 - aar
 
-作为android客户端的第三方库使用时,使用 gomobile bind 命令编译成 aar, 参考 gomobile.txt(gomobile.txt)
+作为android客户端的第三方库使用时,使用 gomobile bind 命令编译成 aar, 参考 [gomobile.txt](gomobile.txt)
 
 
 
