@@ -164,6 +164,7 @@ type Peer interface {
 	TunnelEventNotifier
 	GetProto() *Proto
 	Stat() *PointStat
+	ClearConn()
 }
 
 //all proxy protocol proto implement
@@ -215,6 +216,10 @@ func (p *Proto) Stat() *PointStat {
 
 func (p *Proto) Close() error {
 	return nil
+}
+
+func (p *Proto) ClearConn() {
+
 }
 
 type controller interface {
@@ -275,6 +280,9 @@ func (c *ctrl) ClearTunnels() {
 	err := fmt.Errorf("forceibly closed manually")
 	for _, t := range c.tunnels {
 		t.CloseWithError(err)
+	}
+	for _, p := range c.peers {
+		p.ClearConn()
 	}
 }
 func (c *ctrl) PutPeer(id string, peer Peer) {
@@ -468,7 +476,7 @@ func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
 
 	t1 := time.Now().UnixMilli()
 	t.Connected = true
-	 
+
 	go func() {
 		n, err := io.Copy(t.Dst, t.Src)
 		// log.Printf("src    ->    dst  %d  bytes\n", n)
@@ -541,7 +549,7 @@ func (c *container) Start() {
 			case <-tiker.C:
 				st = c.Stat()
 				i++
-				if i > 10 {
+				if i > 3 {
 					i = 0
 					c.LogStatus(st)
 					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
@@ -549,7 +557,10 @@ func (c *container) Start() {
 			case <-autoTiker.C:
 				if c.isLocal {
 					rule.LazySave()
+				} else if st != nil {
+					c.LogStatus(st)
 				}
+				log.Printf("coroutine number %d\n", runtime.NumGoroutine())
 			}
 		}
 	}()
