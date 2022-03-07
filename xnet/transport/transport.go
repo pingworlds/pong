@@ -240,11 +240,13 @@ func (d defaultHttpDialer) Dial(p xnet.Point) (conn net.Conn, err error) {
 	pr, pw := io.Pipe()
 	req.Body = pr
 	var rsp *http.Response
+	log.Println("dial url ", req.URL)
 	rsp, err = cfg.Do(req, cfg)
 	if err != nil {
 		log.Println(err)
 		return
 	}
+	log.Println("after dial   ", rsp.StatusCode)
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		rsp.Body.Close()
 		err = fmt.Errorf("http repsonse error status code %d", rsp.StatusCode)
