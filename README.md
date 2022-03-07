@@ -109,4 +109,22 @@ web server对单一客户端有着最大并发连接数限制，一般不会超�
 关于pong协议的细节，请参阅 <https://github.com/pingworlds/pong-protocol>
 
 
+## 同类项目
+
+
+- v2fly
+
+  <https://github.com/v2fly>
+
+
+- shadowsocks
+
+  <https://github.com/shadowsocks>
+
+
+- trojan
+
+  <https://github.com/trojan-gfw/trojan>
+
+
  

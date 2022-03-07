@@ -109,4 +109,23 @@ Because it is a concurrent proxy on an open network connection, there is no need
 For more information about the pong protocol, see <https://github.com/pingworlds/pong-protocol>.
 
 
+
+## Similar Projects
+
+
+- v2fly
+
+  <https://github.com/v2fly>
+
+
+- shadowsocks
+
+  <https://github.com/shadowsocks>
+
+
+- trojan
+
+  <https://github.com/trojan-gfw/trojan>
+
+
  
