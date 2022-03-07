@@ -193,7 +193,6 @@ func (l *localCtrl) Do(t *Tunnel) (err error) {
 	defer func() {
 		if err != nil && err != io.EOF {
 			t.AddError(err, "")
-			log.Println(err)
 		}
 		t.Close()
 	}()

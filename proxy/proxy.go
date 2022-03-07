@@ -164,7 +164,6 @@ type Peer interface {
 	TunnelEventNotifier
 	GetProto() *Proto
 	Stat() *PointStat
-	ClearConn()
 }
 
 //all proxy protocol proto implement
@@ -216,10 +215,6 @@ func (p *Proto) Stat() *PointStat {
 
 func (p *Proto) Close() error {
 	return nil
-}
-
-func (p *Proto) ClearConn() {
-
 }
 
 type controller interface {
@@ -280,9 +275,6 @@ func (c *ctrl) ClearTunnels() {
 	err := fmt.Errorf("forceibly closed manually")
 	for _, t := range c.tunnels {
 		t.CloseWithError(err)
-	}
-	for _, p := range c.peers {
-		p.ClearConn()
 	}
 }
 func (c *ctrl) PutPeer(id string, peer Peer) {
@@ -462,6 +454,17 @@ func (c *ctrl) OnTunnelReceived(t *Tunnel) {
 	c.cp.Notify(ev)
 }
 
+// func checkErrors(t *Tunnel, err error) {
+// 	if err != nil {
+// 		if err == io.EOF {
+// 			err = nil
+// 		} else if strings.Contains(err.Error(), "aborted") {
+// 			t.AddError(nil, "aborted by your host software")
+// 		} else {
+// 			t.AddError(err, "")
+// 		}
+// 	}
+// }
 func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
 	defer func() {
 		t.Dst.Close()
@@ -529,38 +532,34 @@ func (c *container) Start() {
 	} else if t < 3 {
 		t = 3
 	}
-	t = 3
+	// t = 3
 	loopTime := t * time.Second
 	c.OnStart()
 	go func() {
 		tiker := time.NewTicker(loopTime)
-		autoTiker := time.NewTicker(3 * 60 * time.Second)
+		autoTiker := time.NewTicker(5 * time.Minute)
 		var st *Stat
-
 		defer func() {
 			tiker.Stop()
 			autoTiker.Stop()
 		}()
-		var i = 0
+
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			case <-tiker.C:
 				st = c.Stat()
-				i++
-				if i > 3 {
-					i = 0
-					c.LogStatus(st)
-					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
-				}
+				c.LogStatus(st)
+				log.Printf("coroutine number %d\n", runtime.NumGoroutine())
+
 			case <-autoTiker.C:
 				if c.isLocal {
 					rule.LazySave()
 				} else if st != nil {
 					c.LogStatus(st)
+					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
 				}
-				log.Printf("coroutine number %d\n", runtime.NumGoroutine())
 			}
 		}
 	}()

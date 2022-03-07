@@ -57,12 +57,14 @@ func StopRemote() {
 func LocalStat() []byte {
 	st := proxy.LocalStat()
 	b, _ := json.Marshal(st)
+	st = nil
 	return b
 }
 
 func LocalStatTunnel() []byte {
 	st := proxy.LocalStatTunnel()
-	b, _ := json.Marshal(st)
+	b, _ := json.Marshal(&st)
+	st = nil
 	return b
 }
 

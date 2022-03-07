@@ -43,7 +43,14 @@ const (
 	STATUS_CLOSED  = 2
 )
 
-var Per_Max_Count int = 100
+// var Per_Max_Count int = 3
+// var Conn_TimeOut int64 = 1 * 30
+// var Stream_Idle_TimeOut int64 = 1 * 60
+// var Stream_Close_Time time.Duration = 3
+// var Peek_Time time.Duration = 30
+// var Max_Live int64 = 1 * 60 * 60
+
+var Per_Max_Count int = 50
 var Conn_TimeOut int64 = 1 * 60
 var Stream_Idle_TimeOut int64 = 5 * 60
 var Stream_Close_Time time.Duration = 3
@@ -108,7 +115,7 @@ func (cp *connPool) GetIdle() (pc *pongConn) {
 
 	for i := 0; i < n; {
 		t = cp.conns[i]
-		if t.old && i < n-1 {
+		if t.old && i < n-1 && !cp.conns[n-1].old {
 			t = cp.conns[n-1]
 			cp.conns[n-1] = cp.conns[i]
 			cp.conns[i] = t
@@ -126,7 +133,7 @@ func (cp *connPool) GetIdle() (pc *pongConn) {
 	}
 	return
 }
-
+ 
 func (cp *connPool) close() {
 	cp.clear()
 	if cp.cancel != nil {
@@ -347,13 +354,9 @@ func (pc *pongConn) Get(sid uint32) *stream {
 }
 
 func (pc *pongConn) Remove(sid uint32) {
-	go func() {
-		time.AfterFunc(Stream_Close_Time*time.Second, func() {
-			pc.smu.Lock()
-			defer pc.smu.Unlock()
-			delete(pc.streams, sid)
-		})
-	}()
+	pc.smu.Lock()
+	defer pc.smu.Unlock()
+	delete(pc.streams, sid)
 }
 
 func (pc *pongConn) NewStream(id uint32, t *proxy.Tunnel) *stream {
@@ -423,15 +426,22 @@ func (pc *pongConn) CloseWithError(err error) {
 }
 
 func (pc *pongConn) CloseWithCode(code byte) {
+	defer func() {
+		log.Println("raw conn release......")
+	}()
 	if pc.closing {
 		return
 	}
 	pc.closing = true
 	pc.old = true
 	pc.errCode = code
-	log.Printf("raw conn close (code=%d)", code)
+	log.Printf("raw conn close (code=%d)\n", code)
 	pc.Release()
 	pc.cancel()
+	pc.Conn.Close()
+	pc.rbuf = nil
+	pc.wbuf = nil
+	pc.streams = nil
 	pc.p.Remove(pc.id)
 }
 
@@ -533,9 +543,9 @@ func (pc *pongConn) ReadFrame() error {
 		if s == nil || s.closed {
 			if s != nil {
 				s.CloseWithError(proxy.ERR_CONN_TIMEOUT)
-				log.Printf("frame ignored, stream[%d] is released (%s)", sid, s.t.Addr)
+				log.Printf("frame ignored, stream[%d] is released (%s)\n", sid, s.t.Addr)
 			} else {
-				log.Printf("frame ignored, stream[%d] not exsit", sid)
+				log.Printf("frame ignored, stream[%d] not exsit\n", sid)
 			}
 			if n > 0 {
 				if _, err = io.CopyN(ioutil.Discard, pc.Conn, int64(n)); err != nil {
@@ -555,14 +565,17 @@ func (pc *pongConn) ReadFrame() error {
 					m = n - i
 				}
 
-				f := Frames.New(ftype, sid, FRAME_DATA)
-				f.payload = PayloadPool.Get().(*[]byte)
-				if _, err = io.ReadFull(pc.Conn, (*f.payload)[0:m]); err != nil {
+				payload := PayloadPool.Get().(*[]byte)
+				if _, err = io.ReadFull(pc.Conn, (*payload)[0:m]); err != nil {
 					return err
 				}
-				f.size = m
-				s.frmCh <- f
-				i += m
+				if !s.closed {
+					f := Frames.New(ftype, sid, FRAME_DATA)
+					f.payload = payload
+					f.size = m
+					s.frmCh <- f
+					i += m
+				}
 			}
 		} else {
 			var code byte
@@ -578,8 +591,10 @@ func (pc *pongConn) ReadFrame() error {
 				}
 			}
 			// f := Frames.NewCommandFrame(ftype, sid, code)
-			f := Frames.New(ftype, sid, code)
-			s.frmCh <- f
+			if !s.closed {
+				f := Frames.New(ftype, sid, code)
+				s.frmCh <- f
+			}
 		}
 	}
 
@@ -670,21 +685,25 @@ func (s *stream) UnlockClose(code byte) {
 		s.t.AddError(err, "")
 	}
 	s.WriteRaw(FRAME_RST, payload)
-	log.Printf("stream[%d] released with error %s (%s)", s.id, err.Error(), s.t.Addr)
+	log.Printf("stream[%d] released with error %s (%s)\n", s.id, err.Error(), s.t.Addr)
 	s.release()
 
 }
 
 func (s *stream) release() {
+	defer func() {
+		log.Printf("stream [%d]  released\n", s.id)
+	}()
 	s.cancel()
 	s.t.Close() //close tunnel
 	s.pr.Close()
 	s.pw.Close()
+	s.frmCh = nil
 }
 
 func (s *stream) CloseByRemote(code byte) (err error) {
 	err = fmt.Errorf("error code %d %s", code, proxy.ErrTip[code])
-	log.Printf("stream[%d] forcibly release by remote, %s  (%s)", s.id, err.Error(), s.t.Addr)
+	log.Printf("stream[%d] forcibly release by remote, %s  (%s)\n", s.id, err.Error(), s.t.Addr)
 	if s.t != nil {
 		s.t.AddError(err, "")
 		log.Println(s.t.Errors)
@@ -694,7 +713,6 @@ func (s *stream) CloseByRemote(code byte) (err error) {
 }
 
 func (s *stream) handleFrame(f *frame) (err error) {
-
 	switch f.ftype {
 	case FRAME_DATA:
 		buf := *f.payload
@@ -744,11 +762,11 @@ var Frames = frameCache{
 		New: func() interface{} {
 			return &frame{}
 		},
-	}, 
+	},
 }
 
 type frameCache struct {
-	p sync.Pool 
+	p sync.Pool
 }
 
 func (fc *frameCache) New(ftype byte, sid uint32, code byte) *frame {
@@ -766,7 +784,7 @@ func (fc *frameCache) Put(f *frame) {
 	}
 	f.payload = nil
 	fc.p.Put(f)
-} 
+}
 
 type Local struct{ pong }
 

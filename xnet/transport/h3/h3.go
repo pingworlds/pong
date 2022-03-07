@@ -20,7 +20,7 @@ import (
 )
 
 var quicConfig = &quic.Config{
-	KeepAlive:      true, 
+	KeepAlive:      true,  
 }
 
 type Taker struct {
