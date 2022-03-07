@@ -481,6 +481,7 @@ func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
 	t.Connected = true
 
 	go func() {
+		// log.Printf("src    ->    dst  %s \n", t.Addr)
 		n, err := io.Copy(t.Dst, t.Src)
 		// log.Printf("src    ->    dst  %d  bytes\n", n)
 		f.AfterSend(t, err)

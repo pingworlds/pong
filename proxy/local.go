@@ -253,21 +253,24 @@ func (l *localCtrl) Open(t *Tunnel) (f Filter, err error) {
 
 	tt := time.Now().UnixMilli()
 
-	for _, point := range cfg.Points {
+	for _, point := range cfg.Points {	 
 		if point.Disabled || point.Breaking && time.Duration(tt-point.BreakTime) > Break_Time {
+			log.Printf("point  %s disabed\n", point.Host)
 			continue
 		}
 		var peer Peer
 
 		p := l.GetPeer(point.ID())
+
 		if p == nil {
+			// log.Println("new peer   ", point.Host)
 			if peer, err = l.NewPeer(*point); err != nil {
 				log.Println("init peer error ", err)
 				continue
 			}
 			l.PutPeer(point.ID(), peer)
 		} else {
-			peer = p
+			peer = p	 
 		}
 		if err = peer.Open(t); err == nil {
 			f = peer
@@ -275,8 +278,9 @@ func (l *localCtrl) Open(t *Tunnel) (f Filter, err error) {
 				point.Breaking = false
 				point.BreakTime = 0
 			}
+			// log.Println("open peer success ", point.Host)
 			return
-		} else {
+		} else {		 
 			point.Breaking = true
 			point.BreakTime = tt
 			log.Println(err)
@@ -286,6 +290,7 @@ func (l *localCtrl) Open(t *Tunnel) (f Filter, err error) {
 	if f == nil {
 		err = xnet.Err_NoUsefulPoint
 		l.OnError(err)
+		// log.Println("open connection failed")
 	}
 	return
 }

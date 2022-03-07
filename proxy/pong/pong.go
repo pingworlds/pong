@@ -131,9 +131,10 @@ func (cp *connPool) GetIdle() (pc *pongConn) {
 			break
 		}
 	}
+
 	return
 }
- 
+
 func (cp *connPool) close() {
 	cp.clear()
 	if cp.cancel != nil {
@@ -295,6 +296,7 @@ func (p *pong) NewPongConn(conn net.Conn, ver byte, do proxy.Do, isLocal bool) *
 		created: time.Now().UnixMilli(),
 	}
 	p.Put(pc)
+	log.Println("raw conn created......")
 	return pc
 }
 
@@ -391,6 +393,7 @@ func (pc *pongConn) new(id uint32, t *proxy.Tunnel) *stream {
 		lastWrite: tt,
 	}
 	pc.Put(s.id, s)
+	log.Printf("stream %d created \n", s.id)
 	go s.Listen()
 	return s
 }
