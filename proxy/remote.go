@@ -3,7 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"io"
+	"log"
 
 	"github.com/pingworlds/pong/event"
 	"github.com/pingworlds/pong/xnet"
@@ -71,7 +71,7 @@ func (r *remoteCtrl) NewPeer(point xnet.Point) (p Peer, err error) {
 
 func (r *remoteCtrl) NewListenPeer(point xnet.Point) (p Peer, err error) {
 	if p, err = r.NewPeer(point); err == nil {
-		r.peers[point.ID()] = p
+		r.PutPeer(point.ID(), p)
 	}
 	return
 }
@@ -79,10 +79,17 @@ func (r *remoteCtrl) NewListenPeer(point xnet.Point) (p Peer, err error) {
 func (r *remoteCtrl) readyDo(f Filter) Do {
 	return func(t *Tunnel) (err error) {
 		defer func() {
-			if err != nil && err != io.EOF {
-				t.AddError(err, "")
-			}
 			t.Close()
+			if err != nil {
+				t.AddError(err)
+			}
+			if t.Error != nil {
+				log.Printf("connect %s error   %v", t.Addr, t.Error)
+			}
+			if r := recover(); r != nil {
+				t.SrcPeer.ClearConn()
+				fmt.Println("panic error")
+			}
 		}()
 		if t.Method == CONNECT {
 			t.Dst, err = xnet.Dial(t.Addr)
@@ -94,6 +101,7 @@ func (r *remoteCtrl) readyDo(f Filter) Do {
 		if err = f.AfterDial(t, err); err != nil {
 			return err
 		}
+
 		return r.relay(f, t)
 	}
 }

@@ -95,7 +95,7 @@ func CheckDohs(isDirect bool, b []byte, domain string, s Stream) {
 		if err = json.Unmarshal(b, &dohs); err != nil {
 			notify(event.NewEvent(event.DATA, nil, err))
 			return
-		}
+		}	 
 		proxy.CheckDohs(isDirect, dohs, domain, notify)
 	})
 }

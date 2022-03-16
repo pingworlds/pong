@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -91,6 +92,8 @@ func CheckDohs(isDirect bool, dohs []*xnet.Doh, domain string, notify event.Noti
 				s, err = checkDohClient(isDirect, client, b)
 				latency = client.Latency
 			}
+
+			log.Printf("time %d   %s \n", latency, s)
 			data := dohData{
 				Path:   d.Path,
 				Time:   latency,

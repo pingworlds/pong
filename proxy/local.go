@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"sort"
 	"time"
@@ -15,7 +14,7 @@ import (
 	"github.com/pingworlds/pong/xnet"
 )
 
-var Break_Time = 1 * time.Minute
+var Break_Time int64 = 3 * 1000
 var locs *container
 var locCtrl *localCtrl
 var dns_muu = 520
@@ -191,10 +190,17 @@ func (c *localCtrl) NewListenPeer(point xnet.Point) (p Peer, err error) {
 
 func (l *localCtrl) Do(t *Tunnel) (err error) {
 	defer func() {
-		if err != nil && err != io.EOF {
-			t.AddError(err, "")
-		}
 		t.Close()
+		if err != nil {
+			t.AddError(err)
+		}
+		if t.Error != nil {
+			log.Printf("connect %s error   %v", t.Addr, t.Error)
+		}
+		if r := recover(); r != nil {
+			t.DstPeer.ClearConn()
+			fmt.Println("panic error")
+		}
 	}()
 	switch t.Method {
 	case CONNECT:
@@ -219,15 +225,13 @@ func (l *localCtrl) onConnect(t *Tunnel) (err error) {
 		return
 	case rule.MODE_DIRECT:
 		if err = directPeer.Open(t); err != nil {
-			log.Println(err)
 			if cfg.AutoTry && rule.CanAutoTry(err.Error()) {
-				t.AddError(err, "")
 				err = nil
 				tryProxy = true
 				f, err = l.Open(t)
 			}
 		} else {
-			f = EmptyFilter
+			f = DefaultFilter
 		}
 	case rule.MODE_PROXY:
 		f, err = l.Open(t)
@@ -238,7 +242,6 @@ func (l *localCtrl) onConnect(t *Tunnel) (err error) {
 
 	err = l.relay(f, t)
 	if err == nil && tryProxy {
-		// log.Printf("auto try.....mode:%d  %s ", mode, host)
 		t.AutoTry = true
 		rule.AddToAutoList((t.Addr)[0], host)
 	}
@@ -253,24 +256,20 @@ func (l *localCtrl) Open(t *Tunnel) (f Filter, err error) {
 
 	tt := time.Now().UnixMilli()
 
-	for _, point := range cfg.Points {	 
-		if point.Disabled || point.Breaking && time.Duration(tt-point.BreakTime) > Break_Time {
+	for _, point := range cfg.Points {
+		if point.Disabled || point.Breaking && tt-point.BreakTime < Break_Time {
 			log.Printf("point  %s disabed\n", point.Host)
 			continue
 		}
 		var peer Peer
-
 		p := l.GetPeer(point.ID())
-
 		if p == nil {
-			// log.Println("new peer   ", point.Host)
 			if peer, err = l.NewPeer(*point); err != nil {
-				log.Println("init peer error ", err)
 				continue
 			}
 			l.PutPeer(point.ID(), peer)
 		} else {
-			peer = p	 
+			peer = p
 		}
 		if err = peer.Open(t); err == nil {
 			f = peer
@@ -278,19 +277,17 @@ func (l *localCtrl) Open(t *Tunnel) (f Filter, err error) {
 				point.Breaking = false
 				point.BreakTime = 0
 			}
-			// log.Println("open peer success ", point.Host)
 			return
-		} else {		 
+		} else {
 			point.Breaking = true
 			point.BreakTime = tt
-			log.Println(err)
+			log.Println("point break ", err)
 		}
 	}
 
 	if f == nil {
 		err = xnet.Err_NoUsefulPoint
 		l.OnError(err)
-		// log.Println("open connection failed")
 	}
 	return
 }

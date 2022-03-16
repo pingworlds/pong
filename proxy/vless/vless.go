@@ -26,6 +26,7 @@ type vless struct {
 	*proxy.Proto
 }
 
+
 func (v vless) Handle(src net.Conn) {
 	defer src.Close()
 	method, addr, err := v.readMethod(src)
@@ -40,7 +41,7 @@ func (v vless) readMethod(src net.Conn) (method byte, addr xnet.Addr, err error)
 	b := *kit.Byte23.Get().(*[]byte)
 	defer kit.Byte23.Put(&b)
 
-	if _, err = io.ReadFull(src, b); err != nil {
+	if _, err = v.ReadFull(src, b); err != nil {
 		return
 	}
 	if v.isVaild(string(b[1:17])) {
@@ -69,7 +70,7 @@ func (v vless) readMethod(src net.Conn) (method byte, addr xnet.Addr, err error)
 	}
 
 	b2 := make([]byte, n+4)
-	if _, err = io.ReadFull(src, b2[2:n+2]); err != nil {
+	if _, err = v.ReadFull(src, b2[2:n+2]); err != nil {
 		return
 	}
 
@@ -130,8 +131,7 @@ func (r Remote) AfterDial(t *proxy.Tunnel, err error) error {
 			0,
 			1,
 			0,
-			proxy.GetErrorCode(err, proxy.ERR_NET))
-		// b = []byte{0, 1, 0, proxy.GetErrorCode(err, proxy.ERR_NET)}
+			proxy.GetErrorCode(err))
 	} else {
 		_ = append(b[:0], 0)
 	}
@@ -152,11 +152,11 @@ func (l Local) BeforeSend(t *proxy.Tunnel) error {
 func (l Local) BeforeReceive(t *proxy.Tunnel) (err error) {
 	b := *kit.Byte3.Get().(*[]byte)
 	defer kit.Byte3.Put(&b)
-	if _, err = io.ReadFull(t.Dst, b[:2]); err != nil {
+	if _, err = l.ReadFull(t.Dst, b[:2]); err != nil {
 		return err
 	}
 	if b[1] == 1 {
-		io.ReadFull(t.Dst, b[:1])
+		l.ReadFull(t.Dst, b[:1])
 		s := proxy.ErrTip[b[0]]
 		if s == "" {
 			s = proxy.ErrTip[proxy.ERR]

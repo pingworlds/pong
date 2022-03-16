@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	IPV4 byte =  1
+	IPV4 byte = 1
 
-	DOMAIN byte =  3
+	DOMAIN byte = 3
 
-	IPV6 byte =  4
+	IPV6 byte = 4
 )
 
 /**
@@ -59,7 +59,7 @@ func (a Addr) IP() net.IP {
 
 func ReadAddr(r io.Reader) (Addr, error) {
 	b := make([]byte, 2)
-	_, err := io.ReadFull(r, b)
+	_, err := ReadFullWithTimeout(r, b, 10000)
 	if err != nil {
 		return nil, err
 	}
@@ -107,4 +107,98 @@ type Doh struct {
 	Name     string
 	Path     string
 	Method   string //get or post
+}
+
+var TimeoutError = &timeoutError{}
+
+type timeoutError struct{}
+
+func (e *timeoutError) Error() string   { return "src/dst timeout" }
+func (e *timeoutError) Timeout() bool   { return true }
+func (e *timeoutError) Temporary() bool { return true }
+
+var BreakError = &breakError{}
+
+type breakError struct{}
+
+func (e *breakError) Error() string { return "break" }
+
+func NewByteReader() *ByteReader {
+	return &ByteReader{}
+}
+
+type ByteReader struct {
+	Break bool
+}
+
+func (br *ByteReader) Read(r io.Reader, b []byte) (n int, err error) {
+	return br.read(r, b, false, 0)
+}
+
+func (br *ByteReader) ReadWithTimeout(r io.Reader, b []byte, timeout int64) (n int, err error) {
+	return br.read(r, b, false, timeout)
+}
+
+func (br *ByteReader) ReadFull(r io.Reader, b []byte) (n int, err error) {
+	return br.read(r, b, true, 0)
+}
+
+func (br *ByteReader) ReadFullWithTimeout(r io.Reader, b []byte, timeout int64) (n int, err error) {
+	return br.read(r, b, true, timeout)
+}
+
+func (br *ByteReader) read(r io.Reader, b []byte, full bool, timeout int64) (n int, err error) {
+	var nr int
+	var t, t2 int64
+	if timeout > 0 {
+		t = time.Now().UnixMilli()
+	}
+	for {
+		if br.Break {
+			return
+		}
+		nr, err = r.Read(b[n:])
+		if nr > 0 {
+			n = n + nr
+			if n == len(b) {
+				return
+			}
+		}
+		if err != nil || !full {
+			return
+		}
+
+		if br.Break {
+			err = BreakError
+			return
+		}
+
+		if timeout > 0 {
+			t2 = time.Now().UnixMilli()
+			if t2-t > timeout {
+				err = TimeoutError
+				return
+			}
+			t = t2
+		}
+	}
+
+}
+
+var br = NewByteReader()
+
+func Read(r io.Reader, b []byte) (n int, err error) {
+	return br.Read(r, b)
+}
+
+func ReadWithTimeout(r io.Reader, b []byte, timeout int64) (n int, err error) {
+	return br.ReadWithTimeout(r, b, timeout)
+}
+
+func ReadFull(r io.Reader, b []byte) (n int, err error) {
+	return br.ReadFull(r, b)
+}
+
+func ReadFullWithTimeout(r io.Reader, b []byte, timeout int64) (n int, err error) {
+	return br.ReadFullWithTimeout(r, b, timeout)
 }

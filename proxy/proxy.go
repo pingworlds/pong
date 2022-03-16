@@ -2,13 +2,13 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"text/tabwriter"
 	"time"
@@ -41,6 +41,12 @@ const (
 	TunnelEvent_MAX int = 300
 )
 
+var Header_TimeOut int64 = 10 * 1000
+var Copy_Read_Timeout int = 5 * 60 //second
+var Copy_Read_Loop_Max = Copy_Read_Timeout / 45
+
+var Err_Manually_Close = fmt.Errorf("forceibly closed manually")
+
 type Tunnel struct {
 	ctrl         *ctrl
 	Id           string
@@ -61,17 +67,22 @@ type Tunnel struct {
 	Connected    bool
 	AutoTry      bool
 	Multiple     bool
-	Errors       []string
-	closed       bool
+	Error        error
+	Closed       bool
+	SendDone     bool
+	RecvDone     bool
+	WriteSrcErr  error
+	ReadSrcErr   error
+	WriteDstErr  error
+	ReadDstErr   error
 	TunnelEventNotifier
 }
 
-func (t *Tunnel) AddError(err error, msg string) {
-	if err != nil {
-		arr := strings.Split(err.Error(), ":")
-		msg = strings.Trim(arr[len(arr)-1]+msg, " ")
+func (t *Tunnel) AddError(err error) {
+	if t.Error != nil {
+		return
 	}
-	t.Errors = append(t.Errors, msg)
+	t.Error = err
 }
 
 func (t *Tunnel) IsLocal() bool {
@@ -79,21 +90,23 @@ func (t *Tunnel) IsLocal() bool {
 }
 
 func (t *Tunnel) CloseWithError(err error) {
-	t.AddError(err, "")
+	t.AddError(err)
 	t.Close()
 }
 
 func (t *Tunnel) Close() {
-	if t.closed {
+	if t.Closed {
 		return
 	}
-	t.closed = true
+	t.Closed = true
 	t.ctrl.RemoveTunnel(t.Id)
 	if t.Src != nil {
 		t.Src.Close()
+		t.Src = nil
 	}
 	if t.Dst != nil {
 		t.Dst.Close()
+		t.Dst = nil
 	}
 	if !t.Multiple {
 		if t.DstPeer != nil {
@@ -104,6 +117,7 @@ func (t *Tunnel) Close() {
 		}
 	}
 	t.CloseTime = time.Now().UnixMilli()
+	// log.Printf("tunnel closed (%s)\n", t.Addr)
 	t.OnTunnelClose(t)
 }
 
@@ -112,9 +126,9 @@ type Filter interface {
 	BeforeDial(t *Tunnel, err error) error
 	AfterDial(t *Tunnel, err error) error
 	BeforeSend(t *Tunnel) error
-	AfterSend(t *Tunnel, err error) error
+	AfterSend(t *Tunnel) error
 	BeforeReceive(t *Tunnel) error
-	AfterReceive(t *Tunnel, err error) error
+	AfterReceive(t *Tunnel) error
 }
 
 //dial remote peer open a tunnel for target address
@@ -164,12 +178,13 @@ type Peer interface {
 	TunnelEventNotifier
 	GetProto() *Proto
 	Stat() *PointStat
+	ClearConn()
 }
 
 //all proxy protocol proto implement
 type Proto struct {
 	xnet.Point
-	filter
+	Filter
 	Do Do
 	DialAddr
 	ServiceEventNotifier
@@ -177,6 +192,10 @@ type Proto struct {
 	IsDirect bool
 	cn       int
 	ctrl     controller
+}
+
+func (p *Proto) ReadFull(r io.Reader, b []byte) (n int, err error) {
+	return xnet.ReadFullWithTimeout(r, b, Header_TimeOut)
 }
 
 func (p *Proto) GetProto() *Proto {
@@ -206,11 +225,14 @@ func (p *Proto) Open(t *Tunnel) error {
 }
 
 func (p *Proto) Handle(conn net.Conn) {
-	log.Printf("empty server")
+	log.Printf("empty server\n")
 }
 
 func (p *Proto) Stat() *PointStat {
 	return NewPointStat(p, p.cn, p.cn)
+}
+
+func (p *Proto) ClearConn() {
 }
 
 func (p *Proto) Close() error {
@@ -265,18 +287,21 @@ func (c *ctrl) RemoveTunnel(id string) {
 }
 
 func (c *ctrl) CloseTunnel(id string) {
-	err := fmt.Errorf("forceibly closed manually")
+
 	if t, ok := c.tunnels[id]; ok {
-		t.CloseWithError(err)
+		t.CloseWithError(Err_Manually_Close)
 	}
 }
 
 func (c *ctrl) ClearTunnels() {
-	err := fmt.Errorf("forceibly closed manually")
 	for _, t := range c.tunnels {
-		t.CloseWithError(err)
+		t.CloseWithError(Err_Manually_Close)
+	}
+	for _, p := range c.peers {
+		p.ClearConn()
 	}
 }
+
 func (c *ctrl) PutPeer(id string, peer Peer) {
 	c.pmu.Lock()
 	defer c.pmu.Unlock()
@@ -294,6 +319,7 @@ func (c *ctrl) RemovePeer(id string) {
 func (c *ctrl) ClearPeers() {
 	for _, p := range c.peers {
 		p.Close()
+		c.RemovePeer(p.GetProto().Id)
 	}
 }
 func (c *ctrl) BeforeStart() {}
@@ -305,6 +331,7 @@ func (c *ctrl) newProto(point xnet.Point) *Proto {
 		ServiceEventNotifier: c,
 		TunnelEventNotifier:  c,
 		DialAddr:             DialPeerAddr,
+		Filter:               DefaultFilter,
 	}
 }
 
@@ -314,7 +341,6 @@ func (c *ctrl) NewTunnel(id string, src net.Conn, method byte, addr xnet.Addr) *
 		Method:              method,
 		Addr:                addr,
 		Src:                 src,
-		Errors:              []string{},
 		TunnelEventNotifier: c,
 		ctrl:                c}
 
@@ -363,7 +389,7 @@ func (c *ctrl) LogStatus(st *Stat) {
 	}
 	padding := 3
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, padding, ' ', 0)
-	fmt.Fprintf(w, "-------------------------------------------------------------------------\n")
+	fmt.Fprintf(w, "\n-------------------------------------------------------------------------\n")
 	fmt.Fprintf(w, "\tid\ttransport\tprotocol\tconnections\tstreams\n")
 	for _, t := range st.Points {
 		fmt.Fprintf(w, "\t%s\t%s\t%s\t%d\t%d\n", t.Code, t.Transport, t.Protocol, t.ConnCount, t.StreamCount)
@@ -454,52 +480,108 @@ func (c *ctrl) OnTunnelReceived(t *Tunnel) {
 	c.cp.Notify(ev)
 }
 
-// func checkErrors(t *Tunnel, err error) {
-// 	if err != nil {
-// 		if err == io.EOF {
-// 			err = nil
-// 		} else if strings.Contains(err.Error(), "aborted") {
-// 			t.AddError(nil, "aborted by your host software")
-// 		} else {
-// 			t.AddError(err, "")
-// 		}
-// 	}
-// }
-func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
-	defer func() {
-		t.Dst.Close()
-		if r := recover(); r != nil {
-			fmt.Println("panic error")
-		}
-	}()
+var errInvalidWrite = errors.New("invalid write result")
 
+var CopyBuffers = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 8096)
+		return &buf
+	},
+}
+
+func NewFatalError(s string) FatalError {
+	return FatalError{s: s}
+}
+
+type FatalError struct {
+	s string
+}
+
+func (e FatalError) Error() string {
+	return e.s
+}
+
+type WriteTimeOutError error
+
+func Copy(dst net.Conn, src net.Conn, ctx context.Context, sendOrReceive bool) (written int64, er error, ew error) {
+	buf := *CopyBuffers.Get().(*[]byte)
+	defer CopyBuffers.Put(&buf)
+	var nr, nw, count int
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			nr, er = src.Read(buf)
+			if nr > 0 {
+				nw, ew = dst.Write(buf[0:nr])
+				if nw < 0 || nr < nw {
+					nw = 0
+					if ew == nil {
+						ew = errInvalidWrite
+					}
+				}
+				// if sendOrReceive {
+				// 	log.Printf("   src ----->  dst %d bytes\n", nw)
+				// } else {
+				// 	log.Printf("   dst ----->  src %d bytes\n", nw)
+				// }
+				written += int64(nw)
+				if ew != nil {
+					return
+				}
+				if nr != nw {
+					ew = io.ErrShortWrite
+					return
+				}
+			}
+			if er != nil {
+				return
+			}
+			if nr == 0 {
+				count++
+				if count >= Copy_Read_Loop_Max {
+					er = xnet.TimeoutError
+					return
+				}
+			}
+		}
+	}
+}
+
+func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
+	// defer t.Dst.Close()
+	// defer t.Src.Close()
 	if err = f.BeforeSend(t); err != nil {
+		t.AddError(err)
 		return
 	}
 
 	t1 := time.Now().UnixMilli()
 	t.Connected = true
+	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		// log.Printf("src    ->    dst  %s \n", t.Addr)
-		n, err := io.Copy(t.Dst, t.Src)
-		// log.Printf("src    ->    dst  %d  bytes\n", n)
-		f.AfterSend(t, err)
-		// checkErrors(t, err)
-		t.Sent = n
+		t.Sent, t.ReadSrcErr, t.WriteDstErr = Copy(t.Dst, t.Src, ctx, true)
+		t.SendDone = true
+		if err = f.AfterSend(t); err != nil && !t.RecvDone {
+			cancel()
+		}
+		// log.Printf("src    ->    dst  %d  bytes(%s)  %v\n", t.Sent, t.Addr, err)
 		t.SentDuration = time.Now().UnixMilli() - t1
 		c.OnTunnelSent(t)
 	}()
 
 	if err = f.BeforeReceive(t); err == nil {
-		t.Received, err = io.Copy(t.Src, t.Dst)
-		// log.Printf("dst    ->    src  %d  bytes \n", t.Received)
-		err = f.AfterReceive(t, err)
-		// checkErrors(t, err)
-		err = nil
+		t.Received, t.ReadDstErr, t.WriteSrcErr = Copy(t.Src, t.Dst, ctx, false)
 	}
 
+	t.RecvDone = true
 	t.RecvDuration = time.Now().UnixMilli() - t1
+	cancel()
+	f.AfterReceive(t)
+	// log.Printf("dst    ->    src  %d  bytes (%s)  %v \n", t.Received, t.Addr, err)
 	return
 }
 
@@ -524,22 +606,24 @@ func (c *container) Start() {
 	if c.running {
 		return
 	}
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.running = true
 	c.BeforeStart()
-	c.ctx, c.cancel = context.WithCancel(context.Background())
-	t := cfg.StatTime
-	if t == 0 {
-		t = 10
-	} else if t < 3 {
-		t = 3
-	}
-	// t = 3
-	loopTime := t * time.Second
-	c.OnStart()
+
 	go func() {
+		t := cfg.StatTime
+		if t == 0 {
+			t = 10
+		} else if t < 3 {
+			t = 3
+		}
+		// t = 5
+
+		loopTime := t * time.Second
 		tiker := time.NewTicker(loopTime)
 		autoTiker := time.NewTicker(5 * time.Minute)
 		var st *Stat
+		i := 0
 		defer func() {
 			tiker.Stop()
 			autoTiker.Stop()
@@ -551,32 +635,34 @@ func (c *container) Start() {
 				return
 			case <-tiker.C:
 				st = c.Stat()
-				c.LogStatus(st)
-				log.Printf("coroutine number %d\n", runtime.NumGoroutine())
+				i++
+				if i > 30 {
+					i = 0
+					c.LogStatus(st)
+					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
+				}
 
 			case <-autoTiker.C:
 				if c.isLocal {
 					rule.LazySave()
-				} else if st != nil {
-					c.LogStatus(st)
-					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
 				}
 			}
 		}
 	}()
-
+	c.OnStart()
 	for _, point := range cfg.Listens {
 		if point.Disabled {
 			continue
 		}
 		go func(p xnet.Point) {
 			if err := c.doListen(p); err != nil {
-				log.Println(err)
+				log.Println("listen error ", err)
 				c.OnError(err)
 				c.Stop()
 			}
 		}(*point)
 	}
+	<-time.After(1 * time.Second)
 	c.AfterStart()
 	<-c.ctx.Done()
 }
@@ -635,17 +721,58 @@ func (f filter) AfterDial(t *Tunnel, err error) error {
 func (f filter) BeforeSend(t *Tunnel) error {
 	return nil
 }
-func (f filter) AfterSend(t *Tunnel, err error) error {
-	return err
+
+func (f filter) AfterSend(t *Tunnel) error {
+	return nil
 }
 func (f filter) BeforeReceive(t *Tunnel) error {
 	return nil
 }
-func (f filter) AfterReceive(t *Tunnel, err error) error {
-	return err
+func (f filter) AfterReceive(t *Tunnel) error {
+	return nil
+}
+
+type defautFilter struct {
+	*filter
+}
+
+func (f defautFilter) AfterSend(t *Tunnel) (err error) {
+	if t.WriteDstErr != nil {
+		err = t.WriteDstErr
+	} else if !t.RecvDone && t.ReadSrcErr != nil && t.ReadSrcErr != io.EOF {
+		err = t.ReadSrcErr
+	}
+	if err != nil {
+		if t.Dst != nil {
+			t.Dst.Close()
+		}
+
+		if t.Src != nil {
+			t.Src.Close()
+		}
+	}
+	return
+}
+
+func (f defautFilter) AfterReceive(t *Tunnel) (err error) {
+	if t.WriteSrcErr != nil {
+		err = t.WriteSrcErr
+	} else if t.ReadDstErr != nil && t.ReadDstErr != io.EOF {
+		err = t.ReadDstErr
+	}
+	if t.Dst != nil {
+		t.Dst.Close()
+	}
+
+	if t.Src != nil {
+		t.Src.Close()
+	}
+	return
 }
 
 var EmptyFilter = &filter{}
+
+var DefaultFilter = &defautFilter{filter: EmptyFilter}
 
 type Create func(p *Proto) Peer
 
@@ -693,9 +820,8 @@ func NewTunnelData(t *Tunnel) *TunnelData {
 		"Connected":    t.Connected,
 		"AutoTry":      t.AutoTry,
 	}
-
-	if len(t.Errors) > 0 {
-		ev["Errors"] = t.Errors[0]
+	if t.Error != nil {
+		ev["Error"] = t.Error.Error()
 	}
 	peer := t.SrcPeer
 	if t.IsLocal() {

@@ -182,10 +182,9 @@ func (t HttpTaker) GetTLSConfig() *tls.Config {
 }
 
 func (t HttpTaker) NewRequest(u *url.URL) *http.Request {
-	return &http.Request{
-		Method: http.MethodPost,
-		URL:    u,
-	}
+	req, _ := http.NewRequest(http.MethodPost, u.String(), nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	return req
 }
 
 func (t HttpTaker) NewURL(schema string) *url.URL {
@@ -240,13 +239,11 @@ func (d defaultHttpDialer) Dial(p xnet.Point) (conn net.Conn, err error) {
 	pr, pw := io.Pipe()
 	req.Body = pr
 	var rsp *http.Response
-	log.Println("dial url ", req.URL)
 	rsp, err = cfg.Do(req, cfg)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	log.Println("after dial   ", rsp.StatusCode)
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		rsp.Body.Close()
 		err = fmt.Errorf("http repsonse error status code %d", rsp.StatusCode)
@@ -268,11 +265,11 @@ type ClientConn struct {
 	r  io.ReadCloser
 }
 
-func (c ClientConn) Write(b []byte) (n int, err error) {
+func (c ClientConn) Write(b []byte) (int, error) {
 	return c.pw.Write(b)
 }
 
-func (c ClientConn) Read(b []byte) (n int, err error) {
+func (c ClientConn) Read(b []byte) (int, error) {
 	return c.r.Read(b)
 }
 
@@ -321,6 +318,18 @@ func (s ServeConn) flush() error {
 	} else {
 		return fmt.Errorf("connection error,flush is nil")
 	}
+	return nil
+}
+
+func (s ServeConn) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (s ServeConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (s ServeConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 

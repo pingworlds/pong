@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"time"
 
 	"golang.org/x/net/http2"
 
@@ -29,22 +28,18 @@ func (t Taker) GetSchema() string {
 func (t Taker) NewClient(cfg *tls.Config) (c *http.Client) {
 	if t.Transport == "h2c" {
 		c = &http.Client{Transport: &http2.Transport{
-			DisableCompression: true, 
-			AllowHTTP: true,
+			DisableCompression: true,
+			AllowHTTP:          true,
 			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
 				return tcp.Dialer.Dial(network, addr)
 			},
-			ReadIdleTimeout:  30 * time.Second,
-			WriteByteTimeout: 30 * time.Second,
 		}}
 	} else {
 		c = &http.Client{
 			Transport: &http2.Transport{
-				DisableCompression: true, //likely required with caddy
-				TLSClientConfig:  cfg,
-				AllowHTTP:        false,
-				ReadIdleTimeout:  30 * time.Second,
-				WriteByteTimeout: 30 * time.Second,
+				DisableCompression: true, //likely required
+				TLSClientConfig:    cfg,
+				AllowHTTP:          false,
 				DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
 					return tls.DialWithDialer(tcp.Dialer, network, addr, cfg)
 				},

@@ -41,7 +41,7 @@ func (s Socks) handshake(src net.Conn) (method byte, addr xnet.Addr, err error) 
 	b := *kit.Byte3.Get().(*[]byte)
 	defer kit.Byte3.Put(&b)
 
-	if _, err = io.ReadFull(src, b[:2]); err != nil {
+	if _, err = s.ReadFull(src, b[:2]); err != nil {
 		return
 	}
 	v := b[0]
@@ -56,7 +56,7 @@ func (s Socks) handshake(src net.Conn) (method byte, addr xnet.Addr, err error) 
 		if _, err = src.Write([]byte{b[0], 0}); err != nil {
 			return
 		}
-		if _, err = io.ReadFull(src, b[:3]); err != nil {
+		if _, err = s.ReadFull(src, b[:3]); err != nil {
 			return
 		}
 		method = b[1]
@@ -108,7 +108,7 @@ func (l Local) BeforeSend(t *proxy.Tunnel) (err error) {
 		if _, err = t.Dst.Write([]byte{l.Ver, 0x00}); err != nil {
 			return
 		}
-		if _, err = io.ReadFull(t.Dst, b[:2]); err != nil {
+		if _, err = l.ReadFull(t.Dst, b[:2]); err != nil {
 			return
 		}
 		if b[1] != 0 {

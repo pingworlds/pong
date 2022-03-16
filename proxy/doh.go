@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
+	"time"
 
 	"golang.org/x/net/http2"
 
@@ -28,27 +30,46 @@ func InitDoh() {
 	locDohs = []*DohClient{}
 	rmtDohs = []*DohClient{}
 
-	for _, doh := range cfg.WorkDohs {
-		if doh.Disabled {
-			continue
+	go func() {
+		<-time.After(10000 * time.Millisecond)
+
+		clients := []*DohClient{}
+
+		for _, doh := range cfg.WorkDohs {
+			if doh.Disabled {
+				continue
+			}
+			if client, err := NewDohClient(doh); err == nil {
+				clients = append(clients, client)
+			}
 		}
-		if client, err := NewDohClient(doh); err == nil {
-			locDohs = append(locDohs, client)
-			rmtDohs = append(rmtDohs, client)
+		if cfg.LocalDohMode {
+			CheckDohClients(true, clients, "apple.com")
+			SortDohClients(clients)
+
+			for _, dc := range clients {
+				log.Printf("valid local doh number:%d\n", len(locDohs))
+				if dc.Latency > 9000 {
+					continue
+				}
+				locDohs = append(locDohs, dc)
+				log.Printf("local doh client %s   latency %d", dc.url, dc.Latency)
+			}
 		}
-	}
-	if cfg.LocalDohMode {
-		go func() {
-			CheckDohClients(true, locDohs, "apple.com")
-			SortDohClients(locDohs)
-		}()
-	}
-	if cfg.RemoteDohMode {
-		go func() {
-			CheckDohClients(true, rmtDohs, "google.com")
-			SortDohClients(rmtDohs)
-		}()
-	}
+		if cfg.RemoteDohMode {
+			CheckDohClients(false, clients, "google.com")
+			SortDohClients(clients)
+			for _, dc := range clients {
+				log.Printf("remote doh client %s   latency %d", dc.url, dc.Latency)
+				if dc.Latency > 9000 {
+					continue
+				}
+				rmtDohs = append(rmtDohs, dc)
+
+			}
+			log.Printf("valid remote doh number:%d\n", len(rmtDohs))
+		}
+	}()
 }
 
 func SortDohClients(clients []*DohClient) {
@@ -63,6 +84,9 @@ func DohQuery(b []byte, isDirect bool) (p []byte, err error) {
 		clients = locDohs
 	}
 	for _, client := range clients {
+		if client.Disabled {
+			continue
+		}
 		if p, err = client.Query(b, isDirect); err == nil {
 			return
 		}
@@ -77,17 +101,20 @@ type DohClient struct {
 	url     *url.URL
 	conn    *http2.ClientConn
 	cfg     *tls.Config
-	h       http.Header 
+	h       http.Header
 }
 
 func (d *DohClient) Query(b []byte, isDirect bool) (p []byte, err error) {
 	var req *http.Request
 	if req, err = d.NewGetRequest(b); err != nil {
+		d.Disabled = true
 		return
 	}
 
 	var rsp *http.Response
 	if rsp, err = d.Do(req, isDirect); err != nil {
+		d.Disabled = true
+		log.Printf("doh client url %s query error %v\n", d.url, err)
 		d.Close()
 		return
 	}
@@ -97,19 +124,25 @@ func (d *DohClient) Query(b []byte, isDirect bool) (p []byte, err error) {
 		err = fmt.Errorf("doh response error, status code %d", code)
 		return
 	}
-	p, err = io.ReadAll(rsp.Body)
+	if p, err = io.ReadAll(rsp.Body); err != nil && err == io.EOF {
+		err = nil
+	}
 	return
 }
 
 //always http2
 func (d *DohClient) Do(req *http.Request, isDirect bool) (rsp *http.Response, err error) {
-	tr := http2.Transport{}
 	if d.conn == nil {
 		var tc *tls.Conn
 		tc, err = d.dialDoh(isDirect)
 		if err != nil {
 			return
 		}
+		tr := http2.Transport{
+			ReadIdleTimeout:  15 * time.Second,
+			WriteByteTimeout: 15 * time.Second,
+		}
+
 		if d.conn, err = tr.NewClientConn(tc); err != nil {
 			tc.Close()
 			return
@@ -121,9 +154,14 @@ func (d *DohClient) Do(req *http.Request, isDirect bool) (rsp *http.Response, er
 func (d DohClient) dialDoh(isDirect bool) (tc *tls.Conn, err error) {
 	var f Filter
 	tun := locCtrl.NewTunnel(uuid.NewString(), nil, CONNECT, d.addr)
-	defer tun.Close()
+	defer func() {
+		if err != nil {
+			tun.Close()
+		}
+	}()
 	if isDirect {
-		f = EmptyFilter
+		// f = EmptyFilter
+		f = DefaultFilter
 		err = directPeer.Open(tun)
 	} else {
 		f, err = locCtrl.Open(tun)
@@ -137,7 +175,6 @@ func (d DohClient) dialDoh(isDirect bool) (tc *tls.Conn, err error) {
 	tc = tls.Client(&rawConn{Conn: tun.Dst, filter: f, tun: tun}, d.cfg)
 	if err = tc.Handshake(); err != nil {
 		err = fmt.Errorf("doh tls handshake error %v", err)
-		tun.Dst.Close()
 	}
 	return
 }
@@ -228,4 +265,10 @@ func (c *rawConn) Read(b []byte) (n int, err error) {
 		c.filter.BeforeReceive(c.tun)
 	}
 	return c.Conn.Read(b)
+}
+
+func (c *rawConn) Close() error {
+	c.Conn.Close()
+	c.tun.Close()
+	return nil
 }

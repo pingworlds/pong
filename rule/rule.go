@@ -162,16 +162,15 @@ func How(t byte, host string) (mode byte) {
 	if !inited {
 		return
 	}
-	if isWhiteOrBlackMode() {
-		s := MyList.Get(host)
-		if s == nil {
-			if AutoTryList.Hit(host) {
-				return MODE_PROXY
-			}
-		} else {
-			return s.(*site).Mode
+ 
+	s := MyList.Get(host)
+	if s == nil {
+		if AutoTryList.Hit(host) {
+			return MODE_PROXY
 		}
-	}
+	} else {
+		return s.(*site).Mode
+	} 
 
 	if t == xnet.DOMAIN {
 		if cfg.RejectMode && PreDomainRejectList.Hit(host) {
