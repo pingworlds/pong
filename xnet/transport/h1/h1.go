@@ -17,7 +17,7 @@ type Dialer struct {
 	transport.HttpDialer
 }
 
-func (d Dialer) Dial(p xnet.Point) (conn net.Conn, err error) {
+func (d Dialer) Dial(p *xnet.Point) (conn net.Conn, err error) {
 	cfg := d.GetConfig(p)
 	var c net.Conn
 	if c, err = tcp.DialTCP(p); err != nil {
@@ -61,7 +61,7 @@ type server struct {
 	transport.CloserServer
 }
 
-func (s *server) Listen(p xnet.Point, handle transport.Handle) (err error) {
+func (s *server) Listen(p *xnet.Point, handle transport.Handle) (err error) {
 	fn := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { 
 		f, ok := w.(http.Flusher)	
 		if !ok || p.Path != "" && r.URL.Path != p.Path {

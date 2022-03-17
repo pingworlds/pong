@@ -11,7 +11,7 @@ import (
 
 var Dialer = &net.Dialer{Timeout: time.Second * 10}
 
-func DialTCP(p xnet.Point) (conn net.Conn, err error) {
+func DialTCP(p *xnet.Point) (conn net.Conn, err error) {
 	addr := p.Host
 	var port string
 	if _, _, err = net.SplitHostPort(p.Host); err != nil {
@@ -24,7 +24,7 @@ func DialTCP(p xnet.Point) (conn net.Conn, err error) {
 	return Dialer.Dial("tcp", addr)
 }
 
-func DialUDP(p xnet.Point) (conn net.Conn, err error) {
+func DialUDP(p *xnet.Point) (conn net.Conn, err error) {
 	return Dialer.Dial("udp", p.Host)
 }
 
@@ -32,7 +32,7 @@ type TLSDialer struct {
 	transport.HttpDialer
 }
 
-func (d TLSDialer) Dial(p xnet.Point) (conn net.Conn, err error) {
+func (d TLSDialer) Dial(p *xnet.Point) (conn net.Conn, err error) {
 	cfg := d.GetConfig(p)
 	return tls.DialWithDialer(Dialer, "tcp", p.Host, cfg.TLSConfig)
 }
@@ -47,7 +47,7 @@ type server struct {
 	transport.CloserServer
 }
 
-func (s *server) ReadyTLSConfig(p xnet.Point) (cfg *tls.Config, err error) {
+func (s *server) ReadyTLSConfig(p *xnet.Point) (cfg *tls.Config, err error) {
 	var cert tls.Certificate
 	if cert, err = tls.LoadX509KeyPair(p.CertFile, p.KeyFile); err != nil {
 		return
@@ -56,7 +56,7 @@ func (s *server) ReadyTLSConfig(p xnet.Point) (cfg *tls.Config, err error) {
 	return
 }
 
-func (s *server) Listen(p xnet.Point, handle transport.Handle) (err error) {
+func (s *server) Listen(p *xnet.Point, handle transport.Handle) (err error) {
 	var l net.Listener
 	if p.Transport == "tls" {
 		var cfg *tls.Config

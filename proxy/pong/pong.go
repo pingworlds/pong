@@ -65,31 +65,46 @@ func NewPong(p *proxy.Proto) pong {
 		br:       xnet.NewByteReader(),
 		connPool: connPool,
 	}
-	pg.Filter = proxy.EmptyFilter
+
 	go pg.start()
 	return pg
 }
 
 type closeReq struct {
 	stype byte
-	o     interface{}
+	pconn *pconn
+	sid   uint32
 }
 
 type connPool struct {
-	id       uint32
-	conns    []*pconn
-	closeCh  chan closeReq
-	mu       sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	capacity int
+	id      uint32
+	conns   []*pconn
+	closeCh chan closeReq
+	mu      sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
-func (cp *connPool) Put(pc *pconn) {
+func (cp *connPool) New(p *pong, conn net.Conn, ver byte, do proxy.Do, isLocal bool) *pconn {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pc := &pconn{
+		Conn:    conn,
+		br:      xnet.NewByteReader(),
+		id:      uuid.NewString(),
+		n:       1,
+		p:       p,
+		Do:      do,
+		streams: map[uint32]*stream{},
+		ctx:     ctx,
+		cancel:  cancel,
+		isLocal: isLocal,
+		created: time.Now().UnixMilli(),
+	}
 	cp.conns = append(cp.conns, pc)
-	cp.capacity++
+	return pc
 }
 
 func (cp *connPool) removeConn(pc *pconn) {
@@ -153,18 +168,12 @@ func (cp *connPool) close() {
 func (cp *connPool) clear() {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
+	err := fmt.Errorf(proxy.ErrTip[proxy.ERR_FORCE_CLOSE])
 	for _, c := range cp.conns {
-		c.markClose(proxy.ERR_FORCE_CLOSE, false)
-		c.clearStreams()
-		c.Release()
+		c.Stop(err)
+		// c.Release()
 	}
 	cp.conns = []*pconn{}
-}
-
-func (cp *connPool) closeConn(pc *pconn) {
-	pc.clearStreams()
-	pc.Release()
-	cp.removeConn(pc)
 }
 
 func (cp *connPool) start() {
@@ -176,7 +185,6 @@ func (cp *connPool) start() {
 			select {
 			case <-cp.ctx.Done():
 				return
-
 			case <-tiker.C:
 				cp.checkTimeout()
 			}
@@ -192,20 +200,14 @@ func (cp *connPool) start() {
 				return
 			}
 			if req.stype == 1 {
-				cp.closeConn(req.o.(*pconn))
+				// req.pconn.Release()
+				cp.removeConn(req.pconn)
 			} else if req.stype == 2 {
-				s := req.o.(*stream)
-				s.pc.ReleaseStream(s)
-				// cp.closeStream(req.o.(*stream))
+				req.pconn.RemoveStream(req.sid)
 			}
 		}
 	}
 }
-
-// func (cp *connPool) closeStream(s *stream) {
-// 	s.Release()
-// 	s.pc.removeStream(s.id)
-// }
 
 func (cp *connPool) checkTimeout() {
 	t1 := time.Now().UnixMilli()
@@ -213,8 +215,6 @@ func (cp *connPool) checkTimeout() {
 		if pc == nil || pc.closing {
 			continue
 		}
-		// log.Printf("raw conn[%s] steams count %d\n", pc.id[:4], len(pc.streams))
-
 		if !pc.old && (t1-pc.created) > Max_Live {
 			log.Printf("mark raw conn [%s] old\n", pc.id[:4])
 			pc.old = true
@@ -227,7 +227,7 @@ func (cp *connPool) checkTimeout() {
 			if pc.idling {
 				dt := (t1 - pc.idleTime)
 				if dt > Conn_TimeOut {
-					pc.Close(proxy.ERR_FORCE_CLOSE)
+					pc.Close()
 					log.Printf("raw conn [%s] released (idle %d second) \n", pc.id[:4], dt/1000)
 				}
 			} else {
@@ -251,7 +251,7 @@ func (p pong) Handle(src net.Conn) {
 		log.Printf("read pong connection header error(%v) \n", err)
 		return
 	}
-	pc := p.Newpconn(src, ver, p.Do, false)
+	pc := p.NewConn(src, ver, p.Do, false)
 	pc.Listen()
 }
 
@@ -314,7 +314,7 @@ func (p *pong) Open(t *proxy.Tunnel) (err error) {
 			return
 		}
 
-		pc = p.Newpconn(rc, VER, proxy.LocalDo, true)
+		pc = p.NewConn(rc, VER, proxy.LocalDo, true)
 		go pc.Listen()
 	}
 	if pc != nil {
@@ -323,23 +323,8 @@ func (p *pong) Open(t *proxy.Tunnel) (err error) {
 	return
 }
 
-func (p *pong) Newpconn(conn net.Conn, ver byte, do proxy.Do, isLocal bool) *pconn {
-	ctx, cancel := context.WithCancel(context.Background())
-	pc := &pconn{
-		Conn:    conn,
-		br:      xnet.NewByteReader(),
-		id:      uuid.NewString(),
-		n:       1,
-		p:       p,
-		Do:      do,
-		streams: map[uint32]*stream{},
-		ctx:     ctx,
-		cancel:  cancel,
-		isLocal: isLocal,
-		created: time.Now().UnixMilli(),
-	}
-	p.Put(pc)
-	return pc
+func (p *pong) NewConn(conn net.Conn, ver byte, do proxy.Do, isLocal bool) *pconn {
+	return p.New(p, conn, ver, do, isLocal)
 }
 
 func (p *pong) Close() error {
@@ -375,23 +360,13 @@ type pconn struct {
 	idling   bool
 	closing  bool
 	old      bool
+	err      error
 }
 
 func (pc *pconn) Get(sid uint32) *stream {
 	pc.smu.Lock()
 	defer pc.smu.Unlock()
 	return pc.streams[sid]
-}
-
-func (pc *pconn) ReleaseStream(s *stream) {
-	s.Release()
-	pc.removeStream(s.id)
-}
-
-func (pc *pconn) removeStream(sid uint32) {
-	pc.smu.Lock()
-	defer pc.smu.Unlock()
-	delete(pc.streams, sid)
 }
 
 func (pc *pconn) NewStream(id uint32, t *proxy.Tunnel) *stream {
@@ -407,18 +382,6 @@ func (pc *pconn) OpenStream(t *proxy.Tunnel) *stream {
 	t.DstPeer = pc.p
 	pc.p.OnTunnelOpen(t)
 	return s
-}
-
-func (pc *pconn) clearStreams() {
-	pc.smu.Lock()
-	defer pc.smu.Unlock()
-
-	for _, s := range pc.streams {
-		s.markClose(nil, 0, false)
-		s.WriteCode(FRAME_CLOSE, 0)
-		s.Release()
-		delete(pc.streams, s.id)
-	}
 }
 
 func (pc *pconn) new(id uint32, t *proxy.Tunnel) *stream {
@@ -440,10 +403,17 @@ func (pc *pconn) new(id uint32, t *proxy.Tunnel) *stream {
 			t:     t,
 		},
 	}
-
+	// log.Printf("stream [%d] created (%s)\n", s.id, t.Addr)
 	pc.streams[id] = s
 	go s.Listen()
 	return s
+}
+
+func (pc *pconn) RemoveStream(sid uint32) {
+	pc.smu.Lock()
+	defer pc.smu.Unlock()
+	delete(pc.streams, sid)
+	// log.Printf("stream [%d] removed  \n", sid)
 }
 
 var FrameWriteBuffer = sync.Pool{
@@ -453,37 +423,49 @@ var FrameWriteBuffer = sync.Pool{
 	},
 }
 
-func (pc *pconn) MarkReleaseStream(s *stream) {
-	pc.p.closeCh <- closeReq{stype: 2, o: s}
+func (pc *pconn) MarkRelease(s *stream) {
+	pc.p.closeCh <- closeReq{stype: 2, pconn: pc, sid: s.id}
 }
 
-func (pc *pconn) markClose(code byte, releaseFlag bool) {
-	pc.smu.Lock()
-	defer pc.smu.Unlock()
+func (pc *pconn) Close() {
+	pc.doStop(nil, true)
+}
 
+func (pc *pconn) CloseWithError(err error) {
+	pc.doStop(err, true)
+}
+
+func (pc *pconn) Stop(err error) {
+	pc.doStop(err, false)
+}
+
+func (pc *pconn) doStop(err error, releaseFlag bool) {
 	if pc.closing {
 		return
 	}
 	pc.old = true
 	pc.closing = true
+	pc.err = err
 
+	pc.Release()
 	if releaseFlag {
-		pc.p.closeCh <- closeReq{stype: 1, o: pc}
+		pc.p.closeCh <- closeReq{stype: 1, pconn: pc}
 	}
 }
 
-func (pc *pconn) Close(code byte) {
-	pc.markClose(code, true)
-}
-
 func (pc *pconn) Release() {
+	for _, s := range pc.streams {
+		s.Stop(pc.err)
+		delete(pc.streams, s.id)
+	}
+
 	pc.br.Break = true //stop I/O
 	pc.cancel()        //cancel listening
-	pc.Conn.Close()
+	pc.Conn.Close()    //close network c
 	pc.rbuf = nil
 	pc.wbuf = nil
 	pc.streams = nil
-	log.Printf("raw conn [%s] released  \n", pc.id[:4])
+	// log.Printf("raw conn [%s] released  \n", pc.id[:4])
 }
 
 func (pc *pconn) writeOne(sid uint32, ftype byte, b []byte) (n int, err error) {
@@ -512,9 +494,10 @@ func (pc *pconn) writeOne(sid uint32, ftype byte, b []byte) (n int, err error) {
 func (pc *pconn) WriteRaw(sid uint32, ftype byte, payload []byte) (n int, err error) {
 	defer func() {
 		if err != nil {
-			pc.Close(proxy.GetErrorCode(err))
-		} else if r := recover(); r != nil {
-			pc.Close(0)
+			pc.CloseWithError(err)
+		}
+		if r := recover(); r != nil {
+			pc.Close()
 			fmt.Println("panic error")
 		}
 	}()
@@ -551,16 +534,13 @@ func (pc *pconn) WriteCode(sid uint32, ftype byte, code byte) {
 
 func (pc *pconn) Listen() {
 	var err error
-	defer func() {
-		log.Printf("raw conn [%s] stop listening \n", pc.id[:4])
-	}()
 	for {
 		select {
 		case <-pc.ctx.Done():
 			return
 		default:
 			if err = pc.ReadFrame(); err != nil {
-				pc.Close(proxy.GetErrorCode(err))
+				pc.CloseWithError(err)
 				return
 			}
 		}
@@ -659,7 +639,6 @@ type stream struct {
 	id      uint32
 	closing bool
 	sent    bool
-	closed  bool
 	mu      sync.Mutex
 }
 
@@ -706,60 +685,60 @@ func (s *stream) Listen() {
 }
 
 func (s *stream) Close() error {
-	s.markClose(nil, 0, true)
+	s.doStop(nil, true)
 	return nil
 }
 
-func (s *stream) MarkClose() {
-	s.markClose(nil, 0, true)
+func (s *stream) Stop(err error) {
+	s.doStop(err, false)
 }
 
-func (s *stream) MarkError(err error) {
-	s.markClose(err, 0, true)
+func (s *stream) CloseWithError(err error) {
+	s.doStop(err, true)
 }
 
-func (s *stream) MarkCode(code byte) {
-	s.markClose(nil, code, true)
+func (s *stream) CloseWithCode(code byte) {
+	var err error
+	if code > 0 {
+		err = fmt.Errorf(proxy.ErrTip[code])
+	}
+	s.doStop(err, true)
 }
 
 func (s *stream) SendBye() {
-	s.markClose(nil, 0, true)
 	s.WriteCode(FRAME_CLOSE, 0)
 }
 
 func (s *stream) SendRST(code byte) {
-	s.markClose(nil, code, true)
 	s.WriteCode(FRAME_RST, code)
 }
 
-func (s *stream) SendErrorMark(err error) {
-	s.markClose(err, 0, true)
+func (s *stream) SendError(err error) {
 	s.WriteCode(FRAME_RST, proxy.GetErrorCode(err))
 }
 
-func (s *stream) markClose(err error, code byte, releaseFlag bool) {
+func (s *stream) doStop(err error, releaseFlag bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closing {
 		return
 	}
-
 	s.closing = true
-	// close(s.frmCh)
+	close(s.frmCh)
 
-	// s.pr.Close()
-	// s.pw.Close()
-	if err != nil {
-		if cd := proxy.GetErrorCode(err); cd != proxy.ERR_UNKNOWN {
-			err = fmt.Errorf("error code %d  %s", cd, proxy.ErrTip[cd])
-		}
-		s.t.AddError(err)
+	if s.t.Src != nil {
+		s.t.Src.SetDeadline(time.Now())
 	}
-
+	if s.t.Dst != nil {
+		s.t.Dst.SetDeadline(time.Now())
+	}
 	if releaseFlag {
-		s.pc.MarkReleaseStream(s)
+		s.pc.MarkRelease(s)
 	}
+	s.pr.CloseWithError(err)
+	s.pw.CloseWithError(err)
+
 }
 func (s *stream) WriteCode(ftype byte, code byte) {
 	if s.sent {
@@ -769,48 +748,26 @@ func (s *stream) WriteCode(ftype byte, code byte) {
 	s.pc.WriteCode(s.id, ftype, code)
 }
 
-func (s *stream) Release() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return
-	}
-	s.closed = true
-	close(s.frmCh)
-	if s.t.Dst != nil && s.t.Dst != s {
-		s.t.Dst.Close()
-	}
-
-	if s.t.Src != nil && s.t.Src != s {
-		s.t.Src.Close()
-	}
-
-	s.pr.Close()
-	s.pw.Close()
-	// log.Printf("stream [%d] removed (%s)\n", s.id, s.t.Addr)
-	s.frmCh = nil
-	// s.stremmCtrl = nil
-}
-
-func (s *stream) handleFrame(f *frame) (err error) {
+func (s *stream) handleFrame(f *frame) {
 	switch f.ftype {
 	case FRAME_DATA:
 		buf := *f.payload
-		if _, err = s.pw.Write(buf[:f.size]); err != nil {
-			s.SendErrorMark(err)
+		if _, err := s.pw.Write(buf[:f.size]); err != nil {
+			s.SendError(err)
+			s.CloseWithError(err)
 		}
 	case FRAME_FINISH: // half close
+		s.pw.CloseWithError(io.EOF)
 	case FRAME_CLOSE:
-		s.MarkClose()
+		s.Close()
 	case FRAME_RST:
-		s.MarkCode(f.code)
+		s.CloseWithCode(f.code)
 	default:
 		s.SendRST(proxy.ERR_COMMAND_UNKNOWN)
+		s.CloseWithCode(proxy.ERR_COMMAND_UNKNOWN)
 	}
 
 	Frames.Put(f)
-	return
 }
 
 var PayloadPool = sync.Pool{
@@ -869,21 +826,25 @@ type Local struct{ pong }
 
 func (l Local) BeforeSend(t *proxy.Tunnel) (err error) {
 	if s, ok := t.Dst.(*stream); ok {
-		_, err = s.WriteRaw(t.Method, t.Addr)
+		if _, err = s.WriteRaw(t.Method, t.Addr); err != nil {
+			s.CloseWithError(err)
+		}
 	}
 	return
 }
 
 func (l Local) AfterSend(t *proxy.Tunnel) (err error) {
-	if s, ok := t.Dst.(*stream); ok {
-		if s.closing {
-			return
-		}
+	if s, ok := t.Dst.(*stream); ok && !s.closing {
 		if t.WriteDstErr != nil {
 			err = t.WriteDstErr
-			s.MarkError(err)
+			s.CloseWithError(err)
 		} else {
-			s.Finish()
+			if t.ReadSrcErr != nil && proxy.GetErrorCode(err) == proxy.ERR_SRC_ABORT {
+				s.SendRST(proxy.ERR_SRC_ABORT)
+				s.CloseWithError(err)
+			} else {
+				s.Finish()
+			}
 		}
 	}
 	return err
@@ -891,18 +852,14 @@ func (l Local) AfterSend(t *proxy.Tunnel) (err error) {
 
 func (l Local) AfterReceive(t *proxy.Tunnel) (err error) {
 	if s, ok := t.Dst.(*stream); ok {
-		// if s.closing {
-		// 	return
-		// }
-
 		if t.ReadDstErr != nil && t.ReadDstErr != io.EOF {
-			s.MarkError(t.ReadDstErr)
+			s.CloseWithError(t.ReadDstErr)
 		} else {
-			if t.WriteSrcErr != nil {
+			if t.WriteSrcErr != nil && proxy.GetErrorCode(t.WriteSrcErr) == proxy.ERR_SRC_ABORT {
 				err = t.WriteSrcErr
-				s.MarkError(err)
 			}
 			s.SendBye()
+			s.CloseWithError(err)
 		}
 	}
 	return
@@ -911,26 +868,24 @@ func (l Local) AfterReceive(t *proxy.Tunnel) (err error) {
 type Remote struct{ pong }
 
 func (r Remote) AfterDial(t *proxy.Tunnel, err error) error {
-	if s, ok := t.Src.(*stream); ok {
-		if err != nil {
-			s.SendErrorMark(err)
-		}
+	if s, ok := t.Src.(*stream); ok && err != nil {
+		s.SendError(err)
+		s.CloseWithError(err)
 	}
-
 	return err
 }
 
 func (r Remote) AfterSend(t *proxy.Tunnel) (err error) {
 	if s, ok := t.Src.(*stream); ok {
-		if s.closing {
-			return
-		}
 		if t.ReadSrcErr != nil && t.ReadSrcErr != io.EOF {
 			err = t.ReadSrcErr
-			s.MarkError(err)
 		} else if t.WriteDstErr != nil {
 			err = t.WriteDstErr
-			s.SendErrorMark(err)
+			s.SendError(err)
+		}
+
+		if err != nil {
+			s.CloseWithError(err)
 		}
 	}
 	return
@@ -938,18 +893,13 @@ func (r Remote) AfterSend(t *proxy.Tunnel) (err error) {
 
 func (r Remote) AfterReceive(t *proxy.Tunnel) (err error) {
 	if s, ok := t.Src.(*stream); ok {
-		if s.closing {
-			return
-		}
-
 		if t.ReadDstErr != nil && t.ReadDstErr != io.EOF {
 			err = s.t.ReadDstErr
-			s.SendErrorMark(err)
-		} else if t.WriteSrcErr != nil {
-			s.MarkClose()
+			s.SendError(err)
 		} else {
 			s.SendBye()
 		}
+		s.CloseWithError(err)
 	}
 	return
 }

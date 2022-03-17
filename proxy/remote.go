@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/pingworlds/pong/event"
 	"github.com/pingworlds/pong/xnet"
@@ -20,7 +19,7 @@ func init() {
 	sp.Start()
 }
 
-func NewRemoteProto(point xnet.Point) *Proto {
+func NewRemoteProto(point *xnet.Point) (*Proto, error) {
 	return rmts.NewProto(point)
 }
 
@@ -45,6 +44,8 @@ func StartRemote() {
 }
 
 func StopRemote() {
+	rmts.ClearTunnels()
+	rmts.ClearPeers()
 	rmts.Stop()
 }
 
@@ -52,24 +53,29 @@ type remoteCtrl struct {
 	*ctrl
 }
 
-func (r *remoteCtrl) NewProto(point xnet.Point) *Proto {
-	p := r.ctrl.newProto(point)
-	p.ctrl = r
-	return p
+func (r *remoteCtrl) NewProto(point *xnet.Point) (proto *Proto, err error) {
+	if proto, err = r.ctrl.newProto(point); err != nil {
+		return
+	}
+	proto.ctrl = r
+	return
 }
 
-func (r *remoteCtrl) NewPeer(point xnet.Point) (p Peer, err error) {
+func (r *remoteCtrl) NewPeer(point *xnet.Point) (p Peer, err error) {
 	var ptc *Protocol
 	if ptc, err = GetProtocol(point.Protocol); err != nil {
 		return
 	}
-	proto := r.NewProto(point)
+	var proto *Proto
+	if proto, err = r.NewProto(point); err != nil {
+		return
+	}
 	p = ptc.RemoteFn(proto)
 	proto.Do = r.readyDo(p)
-	return p, nil
+	return
 }
 
-func (r *remoteCtrl) NewListenPeer(point xnet.Point) (p Peer, err error) {
+func (r *remoteCtrl) NewListenPeer(point *xnet.Point) (p Peer, err error) {
 	if p, err = r.NewPeer(point); err == nil {
 		r.PutPeer(point.ID(), p)
 	}
@@ -78,19 +84,8 @@ func (r *remoteCtrl) NewListenPeer(point xnet.Point) (p Peer, err error) {
 
 func (r *remoteCtrl) readyDo(f Filter) Do {
 	return func(t *Tunnel) (err error) {
-		defer func() {
-			t.Close()
-			if err != nil {
-				t.AddError(err)
-			}
-			if t.Error != nil {
-				log.Printf("connect %s error   %v", t.Addr, t.Error)
-			}
-			if r := recover(); r != nil {
-				t.SrcPeer.ClearConn()
-				fmt.Println("panic error")
-			}
-		}()
+		defer t.CloseWithError(err)
+
 		if t.Method == CONNECT {
 			t.Dst, err = xnet.Dial(t.Addr)
 		} else {

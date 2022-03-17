@@ -155,8 +155,10 @@ func (br *ByteReader) read(r io.Reader, b []byte, full bool, timeout int64) (n i
 	}
 	for {
 		if br.Break {
+			err = BreakError
 			return
 		}
+
 		nr, err = r.Read(b[n:])
 		if nr > 0 {
 			n = n + nr
@@ -165,11 +167,6 @@ func (br *ByteReader) read(r io.Reader, b []byte, full bool, timeout int64) (n i
 			}
 		}
 		if err != nil || !full {
-			return
-		}
-
-		if br.Break {
-			err = BreakError
 			return
 		}
 

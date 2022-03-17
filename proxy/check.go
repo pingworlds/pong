@@ -25,15 +25,15 @@ func CheckPoints(points []*xnet.Point, notify event.Notify) {
 	var wg sync.WaitGroup
 	wg.Add(len(points))
 	for _, point := range points {
-		go func(p xnet.Point) {
+		go func(p *xnet.Point) {
 			defer wg.Done()
 			checkPoint(p, notify)
-		}(*point)
+		}(point)
 	}
 	wg.Wait()
 }
 
-func checkPoint(p xnet.Point, notify event.Notify) {
+func checkPoint(p *xnet.Point, notify event.Notify) {
 	var err error
 	var peer Peer
 

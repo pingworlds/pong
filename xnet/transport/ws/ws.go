@@ -19,7 +19,7 @@ type Dialer struct {
 	transport.HttpDialer
 }
 
-func (d Dialer) Dial(p xnet.Point) (conn net.Conn, err error) {
+func (d Dialer) Dial(p *xnet.Point) (conn net.Conn, err error) {
 	cfg := d.GetConfig(p)
 	wd := websocket.DefaultDialer
 	if p.Transport == "wss" {
@@ -38,7 +38,7 @@ type server struct {
 	transport.CloserServer
 }
 
-func (s *server) Listen(p xnet.Point, handle transport.Handle) (err error) {
+func (s *server) Listen(p *xnet.Point, handle transport.Handle) (err error) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { 
 		wc, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {

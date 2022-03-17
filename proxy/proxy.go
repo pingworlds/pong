@@ -79,7 +79,7 @@ type Tunnel struct {
 }
 
 func (t *Tunnel) AddError(err error) {
-	if t.Error != nil {
+	if err == nil || err == io.EOF {
 		return
 	}
 	t.Error = err
@@ -90,23 +90,32 @@ func (t *Tunnel) IsLocal() bool {
 }
 
 func (t *Tunnel) CloseWithError(err error) {
-	t.AddError(err)
-	t.Close()
+	if t.Release(err) {
+		t.ctrl.RemoveTunnel(t.Id)
+	}
 }
 
 func (t *Tunnel) Close() {
+	t.CloseWithError(nil)
+}
+
+func (t *Tunnel) Release(err error) bool {
 	if t.Closed {
-		return
+		return false
 	}
 	t.Closed = true
-	t.ctrl.RemoveTunnel(t.Id)
+	t.AddError(err)
+	if t.Error != nil {
+		log.Printf("connect %s error   %v", t.Addr, t.Error)
+	}
+
 	if t.Src != nil {
 		t.Src.Close()
-		t.Src = nil
+		// t.Src = nil
 	}
 	if t.Dst != nil {
 		t.Dst.Close()
-		t.Dst = nil
+		// t.Dst = nil
 	}
 	if !t.Multiple {
 		if t.DstPeer != nil {
@@ -119,6 +128,7 @@ func (t *Tunnel) Close() {
 	t.CloseTime = time.Now().UnixMilli()
 	// log.Printf("tunnel closed (%s)\n", t.Addr)
 	t.OnTunnelClose(t)
+	return true
 }
 
 //protocol filter
@@ -136,13 +146,13 @@ type Dialer interface {
 	Open(t *Tunnel) error
 }
 
-type DialAddr func(point xnet.Point, addr xnet.Addr) (net.Conn, error)
+type DialAddr func(point *xnet.Point, addr xnet.Addr) (net.Conn, error)
 
-func DialPeerAddr(point xnet.Point, addr xnet.Addr) (net.Conn, error) {
+func DialPeerAddr(point *xnet.Point, addr xnet.Addr) (net.Conn, error) {
 	return transport.Dial(point)
 }
 
-func DialNetAddr(point xnet.Point, addr xnet.Addr) (net.Conn, error) {
+func DialNetAddr(point *xnet.Point, addr xnet.Addr) (net.Conn, error) {
 	return xnet.Dial(addr)
 }
 
@@ -183,7 +193,7 @@ type Peer interface {
 
 //all proxy protocol proto implement
 type Proto struct {
-	xnet.Point
+	*xnet.Point
 	Filter
 	Do Do
 	DialAddr
@@ -245,14 +255,15 @@ type controller interface {
 	BeforeStart()
 	AfterStart()
 	CancelAllSub()
-	NewProto(point xnet.Point) *Proto
-	NewListenPeer(point xnet.Point) (p Peer, err error)
-	NewPeer(point xnet.Point) (p Peer, err error)
+	NewProto(point *xnet.Point) (proto *Proto, err error)
+	NewListenPeer(point *xnet.Point) (p Peer, err error)
+	NewPeer(point *xnet.Point) (p Peer, err error)
 	PutPeer(id string, peer Peer)
 	RemovePeer(id string)
 	NewTunnel(id string, src net.Conn, method byte, addr xnet.Addr) *Tunnel
 	ClearTunnels()
 	ClearPeers()
+	Reset()
 	CloseTunnel(id string)
 	RemoveTunnel(id string)
 	Stat() *Stat
@@ -262,10 +273,10 @@ type controller interface {
 
 func newCtrl(sp event.Provider, cp event.Provider, isLocal bool) *ctrl {
 	return &ctrl{
-		sp:      sp,
-		cp:      cp,
-		peers:   map[string]Peer{},
-		tunnels: map[string]*Tunnel{},
+		sp: sp,
+		cp: cp,
+		// peers:   map[string]Peer{},
+		// tunnels: map[string]*Tunnel{},
 		isLocal: isLocal,
 	}
 }
@@ -280,25 +291,38 @@ type ctrl struct {
 	pmu     sync.Mutex
 }
 
+func (c *ctrl) Reset() {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+
+	c.peers = map[string]Peer{}
+	c.tunnels = map[string]*Tunnel{}
+}
+
 func (c *ctrl) RemoveTunnel(id string) {
 	c.tmu.Lock()
 	defer c.tmu.Unlock()
+
 	delete(c.tunnels, id)
 }
 
 func (c *ctrl) CloseTunnel(id string) {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
 
 	if t, ok := c.tunnels[id]; ok {
-		t.CloseWithError(Err_Manually_Close)
+		t.Release(Err_Manually_Close)
+		delete(c.tunnels, id)
 	}
 }
 
 func (c *ctrl) ClearTunnels() {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+
 	for _, t := range c.tunnels {
-		t.CloseWithError(Err_Manually_Close)
-	}
-	for _, p := range c.peers {
-		p.ClearConn()
+		t.Release(Err_Manually_Close)
+		delete(c.tunnels, t.Id)
 	}
 }
 
@@ -307,7 +331,10 @@ func (c *ctrl) PutPeer(id string, peer Peer) {
 	defer c.pmu.Unlock()
 	c.peers[id] = peer
 }
+
 func (c *ctrl) GetPeer(id string) Peer {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
 	return c.peers[id]
 }
 
@@ -316,23 +343,34 @@ func (c *ctrl) RemovePeer(id string) {
 	defer c.pmu.Unlock()
 	delete(c.peers, id)
 }
+
 func (c *ctrl) ClearPeers() {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+
+	log.Printf("clear %d  peers \n", len(c.peers))
 	for _, p := range c.peers {
 		p.Close()
-		c.RemovePeer(p.GetProto().Id)
+		delete(c.peers, p.GetProto().Id)
 	}
 }
+
 func (c *ctrl) BeforeStart() {}
 func (c *ctrl) AfterStart()  {}
 
-func (c *ctrl) newProto(point xnet.Point) *Proto {
-	return &Proto{
+func (c *ctrl) newProto(point *xnet.Point) (proto *Proto, err error) {
+	if point == nil {
+		err = fmt.Errorf("null point")
+		return
+	}
+	proto = &Proto{
 		Point:                point,
 		ServiceEventNotifier: c,
 		TunnelEventNotifier:  c,
 		DialAddr:             DialPeerAddr,
 		Filter:               DefaultFilter,
 	}
+	return
 }
 
 func (c *ctrl) NewTunnel(id string, src net.Conn, method byte, addr xnet.Addr) *Tunnel {
@@ -551,10 +589,7 @@ func Copy(dst net.Conn, src net.Conn, ctx context.Context, sendOrReceive bool) (
 }
 
 func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
-	// defer t.Dst.Close()
-	// defer t.Src.Close()
 	if err = f.BeforeSend(t); err != nil {
-		t.AddError(err)
 		return
 	}
 
@@ -606,8 +641,9 @@ func (c *container) Start() {
 	if c.running {
 		return
 	}
-	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.running = true
+	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.Reset()
 	c.BeforeStart()
 
 	go func() {
@@ -618,7 +654,6 @@ func (c *container) Start() {
 			t = 3
 		}
 		// t = 5
-
 		loopTime := t * time.Second
 		tiker := time.NewTicker(loopTime)
 		autoTiker := time.NewTicker(5 * time.Minute)
@@ -641,7 +676,6 @@ func (c *container) Start() {
 					c.LogStatus(st)
 					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
 				}
-
 			case <-autoTiker.C:
 				if c.isLocal {
 					rule.LazySave()
@@ -654,20 +688,22 @@ func (c *container) Start() {
 		if point.Disabled {
 			continue
 		}
-		go func(p xnet.Point) {
+		go func(p *xnet.Point) {
 			if err := c.doListen(p); err != nil {
 				log.Println("listen error ", err)
 				c.OnError(err)
 				c.Stop()
 			}
-		}(*point)
+		}(point)
 	}
 	<-time.After(1 * time.Second)
 	c.AfterStart()
+	log.Printf("coroutine number %d\n", runtime.NumGoroutine())
+
 	<-c.ctx.Done()
 }
 
-func (c *container) doListen(p xnet.Point) (err error) {
+func (c *container) doListen(p *xnet.Point) (err error) {
 	peer, err := c.NewListenPeer(p)
 	if err != nil {
 		return
@@ -700,14 +736,13 @@ func (c *container) Stop() {
 	c.running = false
 	if c.cancel != nil {
 		c.cancel()
-		c.cancel = nil
 	}
-	c.ClearTunnels()
-	c.ClearPeers()
 	for _, svr := range c.svrs {
 		svr.Close()
 	}
 	c.svrs = c.svrs[:0]
+	log.Println("container stoped")
+	log.Printf("coroutine number %d\n", runtime.NumGoroutine())
 }
 
 type filter struct{}

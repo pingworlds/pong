@@ -60,7 +60,7 @@ type server struct {
 	transport.CloserServer
 }
 
-func (s *server) Listen(p xnet.Point, handle transport.Handle) (err error) {
+func (s *server) Listen(p *xnet.Point, handle transport.Handle) (err error) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p.Path != "" && r.URL.Path != p.Path {
 			log.Printf("deny illegal access path %s\n", r.URL.Path)

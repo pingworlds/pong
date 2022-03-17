@@ -15,7 +15,7 @@ import (
 )
 
 type Dialer interface {
-	Dial(p xnet.Point) (conn net.Conn, err error)
+	Dial(p *xnet.Point) (conn net.Conn, err error)
 }
 
 type Handle func(conn net.Conn)
@@ -27,11 +27,11 @@ type Handler interface {
 type HandleUDP func(conn *net.UDPConn, b []byte, addr *net.UDPAddr) (err error)
 
 type UDPHandler interface {
-	HandleUDP(conn *net.UDPConn, b []byte, addr *net.UDPAddr) (err error)
+	HandleUDP(conn net.UDPConn, b []byte, addr *net.UDPAddr) (err error)
 }
 
 type Server interface {
-	Listen(p xnet.Point, handle Handle) (err error)
+	Listen(p *xnet.Point, handle Handle) (err error)
 	Close() error
 }
 
@@ -46,17 +46,17 @@ func (s CloserServer) Close() error {
 	return nil
 }
 
-func (s CloserServer) Listen(p xnet.Point, handle Handle) (err error) {
+func (s CloserServer) Listen(p *xnet.Point, handle Handle) (err error) {
 	return xnet.Err_NotImplement
 }
 
 type ServerFn func() (srv Server)
 
-type DialerFn func(point xnet.Point) (d Dialer)
+type DialerFn func(point *xnet.Point) (d Dialer)
 
-type DialFn func(point xnet.Point) (conn net.Conn, err error)
+type DialFn func(point *xnet.Point) (conn net.Conn, err error)
 
-func Dial(point xnet.Point) (conn net.Conn, err error) {
+func Dial(point *xnet.Point) (conn net.Conn, err error) {
 	dial := dialfns[point.Transport]
 	if dial == nil {
 		return nil, fmt.Errorf("transport protocol %s not support", point.Transport)
@@ -117,7 +117,7 @@ type Config struct {
 	Error     error
 }
 
-func NewConfig(p xnet.Point, t Taker) *Config {
+func NewConfig(p *xnet.Point, t Taker) *Config {
 	cfg := &Config{Taker: t}
 	cfg.TLSConfig = cfg.GetTLSConfig()
 	cfg.Schema = cfg.GetSchema()
@@ -146,6 +146,10 @@ func (c *configCache) Get(id string) *Config {
 func (c *configCache) Remove(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	cfg := c.cfgs[id]
+	if cfg != nil {
+		cfg.Client.CloseIdleConnections()
+	}
 	delete(c.cfgs, id)
 }
 
@@ -215,25 +219,25 @@ func NewDefaultHttpDialer(fn TakerFn) *defaultHttpDialer {
 }
 
 type HttpDialer interface {
-	GetConfig(p xnet.Point) *Config
-	Dial(p xnet.Point) (conn net.Conn, err error)
+	GetConfig(p *xnet.Point) *Config
+	Dial(p *xnet.Point) (conn net.Conn, err error)
 }
 
 type defaultHttpDialer struct {
 	NewTaker TakerFn
 }
 
-func (d defaultHttpDialer) GetConfig(p xnet.Point) *Config {
+func (d defaultHttpDialer) GetConfig(p *xnet.Point) *Config {
 	cfg := GetConfig(p.ID())
 	if cfg == nil {
-		t := d.NewTaker(p)
+		t := d.NewTaker(*p)
 		cfg = NewConfig(p, t)
 		CacheConfig(p.ID(), cfg)
 	}
 	return cfg
 }
 
-func (d defaultHttpDialer) Dial(p xnet.Point) (conn net.Conn, err error) {
+func (d defaultHttpDialer) Dial(p *xnet.Point) (conn net.Conn, err error) {
 	cfg := d.GetConfig(p)
 	req := cfg.NewRequest(cfg.URL)
 	pr, pw := io.Pipe()
@@ -246,23 +250,25 @@ func (d defaultHttpDialer) Dial(p xnet.Point) (conn net.Conn, err error) {
 	}
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		rsp.Body.Close()
-		err = fmt.Errorf("http repsonse error status code %d", rsp.StatusCode)
+		err = fmt.Errorf("http response error status code %d", rsp.StatusCode)
+		RemoveConfig(p.ID())
 		return
 	}
-	c := NewClientConn(pr, pw, rsp.Body)
+	c := NewClientConn(pr, pw, rsp.Body, cfg.Client)
 	conn = c
 	return
 }
 
-func NewClientConn(pr *io.PipeReader, pw *io.PipeWriter, r io.ReadCloser) *ClientConn {
-	return &ClientConn{pr: pr, pw: pw, r: r}
+func NewClientConn(pr *io.PipeReader, pw *io.PipeWriter, r io.ReadCloser, client *http.Client) *ClientConn {
+	return &ClientConn{pr: pr, pw: pw, r: r, client: client}
 }
 
 type ClientConn struct {
 	net.Conn
-	pr *io.PipeReader
-	pw *io.PipeWriter
-	r  io.ReadCloser
+	pr     *io.PipeReader
+	pw     *io.PipeWriter
+	r      io.ReadCloser
+	client *http.Client
 }
 
 func (c ClientConn) Write(b []byte) (int, error) {
@@ -270,10 +276,12 @@ func (c ClientConn) Write(b []byte) (int, error) {
 }
 
 func (c ClientConn) Read(b []byte) (int, error) {
+	// return xnet.ReadWithTimeout(c.r, b, 300000)
 	return c.r.Read(b)
 }
 
 func (c ClientConn) Close() error {
+	c.client.CloseIdleConnections()
 	c.pw.Close()
 	c.pr.Close()
 	return c.r.Close()
