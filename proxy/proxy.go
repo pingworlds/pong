@@ -42,9 +42,7 @@ const (
 )
 
 var Header_TimeOut int64 = 10 * 1000
-var Copy_Read_Timeout int = 5 * 60 //second
-var Copy_Read_Loop_Max = Copy_Read_Timeout / 45
-
+var Copy_Read_Timeout int64 = 2 * 60 * 1000 //second
 var Err_Manually_Close = fmt.Errorf("forceibly closed manually")
 
 type Tunnel struct {
@@ -368,7 +366,7 @@ func (c *ctrl) newProto(point *xnet.Point) (proto *Proto, err error) {
 		ServiceEventNotifier: c,
 		TunnelEventNotifier:  c,
 		DialAddr:             DialPeerAddr,
-		Filter:               DefaultFilter,
+		Filter:               EmptyFilter,
 	}
 	return
 }
@@ -544,15 +542,15 @@ type WriteTimeOutError error
 func Copy(dst net.Conn, src net.Conn, ctx context.Context, sendOrReceive bool) (written int64, er error, ew error) {
 	buf := *CopyBuffers.Get().(*[]byte)
 	defer CopyBuffers.Put(&buf)
-	var nr, nw, count int
-
+	var nr, nw int
+	t := time.Now().UnixMilli()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 			nr, er = src.Read(buf)
-			if nr > 0 {
+			if nr > 30 {
 				nw, ew = dst.Write(buf[0:nr])
 				if nw < 0 || nr < nw {
 					nw = 0
@@ -563,7 +561,7 @@ func Copy(dst net.Conn, src net.Conn, ctx context.Context, sendOrReceive bool) (
 				// if sendOrReceive {
 				// 	log.Printf("   src ----->  dst %d bytes\n", nw)
 				// } else {
-				// 	log.Printf("   dst ----->  src %d bytes\n", nw)
+				// 	log.Printf("   src <-----  dst %d bytes\n", nw)
 				// }
 				written += int64(nw)
 				if ew != nil {
@@ -573,13 +571,14 @@ func Copy(dst net.Conn, src net.Conn, ctx context.Context, sendOrReceive bool) (
 					ew = io.ErrShortWrite
 					return
 				}
+
+				t = time.Now().UnixMilli()
 			}
 			if er != nil {
 				return
 			}
 			if nr == 0 {
-				count++
-				if count >= Copy_Read_Loop_Max {
+				if time.Now().UnixMilli()-t >= Copy_Read_Timeout {
 					er = xnet.TimeoutError
 					return
 				}
@@ -590,6 +589,7 @@ func Copy(dst net.Conn, src net.Conn, ctx context.Context, sendOrReceive bool) (
 
 func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
 	if err = f.BeforeSend(t); err != nil {
+		log.Println("before send  ", err)
 		return
 	}
 
@@ -600,6 +600,7 @@ func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
 	go func() {
 		t.Sent, t.ReadSrcErr, t.WriteDstErr = Copy(t.Dst, t.Src, ctx, true)
 		t.SendDone = true
+
 		if err = f.AfterSend(t); err != nil && !t.RecvDone {
 			cancel()
 		}
@@ -611,7 +612,6 @@ func (c *ctrl) relay(f Filter, t *Tunnel) (err error) {
 	if err = f.BeforeReceive(t); err == nil {
 		t.Received, t.ReadDstErr, t.WriteSrcErr = Copy(t.Src, t.Dst, ctx, false)
 	}
-
 	t.RecvDone = true
 	t.RecvDuration = time.Now().UnixMilli() - t1
 	cancel()
@@ -653,12 +653,10 @@ func (c *container) Start() {
 		} else if t < 3 {
 			t = 3
 		}
-		// t = 5
-		loopTime := t * time.Second
-		tiker := time.NewTicker(loopTime)
-		autoTiker := time.NewTicker(5 * time.Minute)
+
+		tiker := time.NewTicker(t * time.Second)
+		autoTiker := time.NewTicker(3 * time.Minute)
 		var st *Stat
-		i := 0
 		defer func() {
 			tiker.Stop()
 			autoTiker.Stop()
@@ -670,15 +668,14 @@ func (c *container) Start() {
 				return
 			case <-tiker.C:
 				st = c.Stat()
-				i++
-				if i > 30 {
-					i = 0
-					c.LogStatus(st)
-					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
-				}
 			case <-autoTiker.C:
 				if c.isLocal {
 					rule.LazySave()
+				}
+
+				if st != nil {
+					c.LogStatus(st)
+					log.Printf("coroutine number %d\n", runtime.NumGoroutine())
 				}
 			}
 		}
@@ -757,57 +754,39 @@ func (f filter) BeforeSend(t *Tunnel) error {
 	return nil
 }
 
-func (f filter) AfterSend(t *Tunnel) error {
-	return nil
-}
-func (f filter) BeforeReceive(t *Tunnel) error {
-	return nil
-}
-func (f filter) AfterReceive(t *Tunnel) error {
-	return nil
-}
-
-type defautFilter struct {
-	*filter
-}
-
-func (f defautFilter) AfterSend(t *Tunnel) (err error) {
+func (f filter) AfterSend(t *Tunnel) (err error) {
 	if t.WriteDstErr != nil {
 		err = t.WriteDstErr
 	} else if !t.RecvDone && t.ReadSrcErr != nil && t.ReadSrcErr != io.EOF {
 		err = t.ReadSrcErr
 	}
 	if err != nil {
-		if t.Dst != nil {
-			t.Dst.Close()
-		}
-
-		if t.Src != nil {
-			t.Src.Close()
-		}
-	}
-	return
-}
-
-func (f defautFilter) AfterReceive(t *Tunnel) (err error) {
-	if t.WriteSrcErr != nil {
-		err = t.WriteSrcErr
-	} else if t.ReadDstErr != nil && t.ReadDstErr != io.EOF {
-		err = t.ReadDstErr
-	}
-	if t.Dst != nil {
 		t.Dst.Close()
-	}
-
-	if t.Src != nil {
 		t.Src.Close()
 	}
 	return
 }
 
-var EmptyFilter = &filter{}
+func (f filter) BeforeReceive(t *Tunnel) error {
+	return nil
+}
 
-var DefaultFilter = &defautFilter{filter: EmptyFilter}
+func (f filter) AfterReceive(t *Tunnel) (err error) {
+	if t.WriteSrcErr != nil {
+		err = t.WriteSrcErr
+	} else if t.ReadDstErr != nil && t.ReadDstErr != io.EOF {
+		err = t.ReadDstErr
+	}
+
+	if err != nil {
+		t.Dst.Close()
+		t.Src.Close()
+	}
+
+	return
+}
+
+var EmptyFilter = &filter{}
 
 type Create func(p *Proto) Peer
 

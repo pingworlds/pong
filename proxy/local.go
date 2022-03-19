@@ -58,7 +58,8 @@ func CancelLocalTunnelEvent(id string) {
 	locs.CancelTunnelEvent(id)
 }
 
-func StartLocal() {
+func StartLocal(p xnet.SocketProtector) {
+	xnet.Protector = p
 	locs.Start()
 }
 
@@ -226,14 +227,15 @@ func (l *localCtrl) onConnect(t *Tunnel) (err error) {
 	}
 
 	if mode == rule.MODE_DIRECT {
-		if err = directPeer.Open(t); err != nil {
+		if err = directPeer.Open(t); err == nil {
+			f = directPeer
+		} else {
 			if cfg.AutoTry && rule.CanAutoTry(err.Error()) {
+				t.AddError(err)
 				tryProxy = true
 			} else {
 				return
 			}
-		} else {
-			f = DefaultFilter
 		}
 	}
 
@@ -243,6 +245,10 @@ func (l *localCtrl) onConnect(t *Tunnel) (err error) {
 
 	if err != nil {
 		return
+	}
+
+	if f == nil {
+		return fmt.Errorf("open connection failed")
 	}
 
 	err = l.relay(f, t)

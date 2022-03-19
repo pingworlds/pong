@@ -2,8 +2,10 @@ package xnet
 
 import (
 	"io"
+	"log"
 	"net"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -87,7 +89,20 @@ func DialUDP(addr Addr) (conn net.Conn, err error) {
 
 func dial(network string, addr Addr) (conn net.Conn, err error) {
 	host, port := addr.HostAndPort()
-	return net.DialTimeout(network, net.JoinHostPort(host, strconv.Itoa(port)), time.Duration(time.Second*5))
+	return Dialer.Dial(network, net.JoinHostPort(host, strconv.Itoa(port)))
+}
+
+var Dialer = &net.Dialer{Timeout: time.Second * 10,
+	Control: func(network, address string, c syscall.RawConn) error {
+		if Protector == nil {
+			return nil
+		}
+		return c.Control(func(fd uintptr) {
+			if !Protector.ProtectSocket(int32(fd)) {
+				log.Println("proect socket failed")
+			}
+		})
+	},
 }
 
 func DomainToAddr(host string, port int) Addr {
@@ -161,7 +176,7 @@ func (br *ByteReader) read(r io.Reader, b []byte, full bool, timeout int64) (n i
 
 		nr, err = r.Read(b[n:])
 		if nr > 0 {
-			n = n + nr
+			n += nr
 			if n == len(b) {
 				return
 			}
@@ -199,3 +214,9 @@ func ReadFull(r io.Reader, b []byte) (n int, err error) {
 func ReadFullWithTimeout(r io.Reader, b []byte, timeout int64) (n int, err error) {
 	return br.ReadFullWithTimeout(r, b, timeout)
 }
+
+type SocketProtector interface {
+	ProtectSocket(fd int32) bool
+}
+
+var Protector SocketProtector

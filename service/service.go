@@ -30,6 +30,10 @@ type Stream interface {
 	event.Stream
 }
 
+type Protector interface {
+	xnet.SocketProtector
+}
+
 func SetConfig(bytes []byte) (s string) {
 	err := json.Unmarshal(bytes, cfg)
 	if err != nil {
@@ -38,8 +42,8 @@ func SetConfig(bytes []byte) (s string) {
 	return s
 }
 
-func StartLocal() {
-	proxy.StartLocal()
+func StartLocal(p Protector) {
+	proxy.StartLocal(p)
 }
 
 func StopLocal() {
@@ -95,7 +99,7 @@ func CheckDohs(isDirect bool, b []byte, domain string, s Stream) {
 		if err = json.Unmarshal(b, &dohs); err != nil {
 			notify(event.NewEvent(event.DATA, nil, err))
 			return
-		}	 
+		}
 		proxy.CheckDohs(isDirect, dohs, domain, notify)
 	})
 }

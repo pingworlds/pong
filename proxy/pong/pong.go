@@ -65,7 +65,6 @@ func NewPong(p *proxy.Proto) pong {
 		br:       xnet.NewByteReader(),
 		connPool: connPool,
 	}
-
 	go pg.start()
 	return pg
 }
@@ -86,9 +85,6 @@ type connPool struct {
 }
 
 func (cp *connPool) New(p *pong, conn net.Conn, ver byte, do proxy.Do, isLocal bool) *pconn {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	pc := &pconn{
 		Conn:    conn,
@@ -103,7 +99,9 @@ func (cp *connPool) New(p *pong, conn net.Conn, ver byte, do proxy.Do, isLocal b
 		isLocal: isLocal,
 		created: time.Now().UnixMilli(),
 	}
+	cp.mu.Lock()
 	cp.conns = append(cp.conns, pc)
+	cp.mu.Unlock()
 	return pc
 }
 
@@ -168,10 +166,10 @@ func (cp *connPool) close() {
 func (cp *connPool) clear() {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
+
 	err := fmt.Errorf(proxy.ErrTip[proxy.ERR_FORCE_CLOSE])
 	for _, c := range cp.conns {
 		c.Stop(err)
-		// c.Release()
 	}
 	cp.conns = []*pconn{}
 }
@@ -198,9 +196,7 @@ func (cp *connPool) start() {
 		case req := <-cp.closeCh:
 			if req.stype == 0 {
 				return
-			}
-			if req.stype == 1 {
-				// req.pconn.Release()
+			} else if req.stype == 1 {
 				cp.removeConn(req.pconn)
 			} else if req.stype == 2 {
 				req.pconn.RemoveStream(req.sid)
@@ -319,6 +315,8 @@ func (p *pong) Open(t *proxy.Tunnel) (err error) {
 	}
 	if pc != nil {
 		pc.OpenStream(t)
+	} else {
+		err = fmt.Errorf("open stream failed")
 	}
 	return
 }
@@ -363,7 +361,7 @@ type pconn struct {
 	err      error
 }
 
-func (pc *pconn) Get(sid uint32) *stream {
+func (pc *pconn) GetStream(sid uint32) *stream {
 	pc.smu.Lock()
 	defer pc.smu.Unlock()
 	return pc.streams[sid]
@@ -385,13 +383,6 @@ func (pc *pconn) OpenStream(t *proxy.Tunnel) *stream {
 }
 
 func (pc *pconn) new(id uint32, t *proxy.Tunnel) *stream {
-	pc.smu.Lock()
-	defer pc.smu.Unlock()
-
-	if id == 0 {
-		id = pc.n
-		pc.n += 2
-	}
 	pr, pw := io.Pipe()
 	s := &stream{
 		id: id,
@@ -403,15 +394,22 @@ func (pc *pconn) new(id uint32, t *proxy.Tunnel) *stream {
 			t:     t,
 		},
 	}
-	// log.Printf("stream [%d] created (%s)\n", s.id, t.Addr)
-	pc.streams[id] = s
+	pc.smu.Lock()
+	if id == 0 {
+		s.id = pc.n
+		pc.n += 2
+	}
+	pc.streams[s.id] = s
+	pc.smu.Unlock()
 	go s.Listen()
+	// log.Printf("stream [%d] created (%s) \n", s.id, t.Addr)
 	return s
 }
 
 func (pc *pconn) RemoveStream(sid uint32) {
 	pc.smu.Lock()
 	defer pc.smu.Unlock()
+
 	delete(pc.streams, sid)
 	// log.Printf("stream [%d] removed  \n", sid)
 }
@@ -440,6 +438,9 @@ func (pc *pconn) Stop(err error) {
 }
 
 func (pc *pconn) doStop(err error, releaseFlag bool) {
+	pc.smu.Lock()
+	defer pc.smu.Unlock()
+
 	if pc.closing {
 		return
 	}
@@ -447,13 +448,13 @@ func (pc *pconn) doStop(err error, releaseFlag bool) {
 	pc.closing = true
 	pc.err = err
 
-	pc.Release()
+	pc.release()
 	if releaseFlag {
 		pc.p.closeCh <- closeReq{stype: 1, pconn: pc}
 	}
 }
 
-func (pc *pconn) Release() {
+func (pc *pconn) release() {
 	for _, s := range pc.streams {
 		s.Stop(pc.err)
 		delete(pc.streams, s.id)
@@ -465,7 +466,7 @@ func (pc *pconn) Release() {
 	pc.rbuf = nil
 	pc.wbuf = nil
 	pc.streams = nil
-	// log.Printf("raw conn [%s] released  \n", pc.id[:4])
+	log.Printf("raw conn [%s] released  \n", pc.id[:4])
 }
 
 func (pc *pconn) writeOne(sid uint32, ftype byte, b []byte) (n int, err error) {
@@ -496,10 +497,10 @@ func (pc *pconn) WriteRaw(sid uint32, ftype byte, payload []byte) (n int, err er
 		if err != nil {
 			pc.CloseWithError(err)
 		}
-		if r := recover(); r != nil {
-			pc.Close()
-			fmt.Println("panic error")
-		}
+		// if r := recover(); r != nil {
+		// 	pc.Close()
+		// 	fmt.Println("panic error")
+		// }
 	}()
 	if pc.closing {
 		return
@@ -560,7 +561,8 @@ func (pc *pconn) ReadFrame() (err error) {
 	}
 	sid := binary.BigEndian.Uint32(buf[2:6])
 	ftype := buf[6]
-	s := pc.Get(sid)
+	s := pc.GetStream(sid)
+
 	n = n - 7
 	if ftype == FRAME_CONNECT || ftype == FRAME_ASSOCIATE || ftype == FRAME_RELAY {
 		if s == nil && n <= 128 {
@@ -738,8 +740,9 @@ func (s *stream) doStop(err error, releaseFlag bool) {
 	}
 	s.pr.CloseWithError(err)
 	s.pw.CloseWithError(err)
-
+	// log.Printf("stream [%d] released (%s)\n", s.id, s.t.Addr)
 }
+
 func (s *stream) WriteCode(ftype byte, code byte) {
 	if s.sent {
 		return
@@ -834,7 +837,7 @@ func (l Local) BeforeSend(t *proxy.Tunnel) (err error) {
 }
 
 func (l Local) AfterSend(t *proxy.Tunnel) (err error) {
-	if s, ok := t.Dst.(*stream); ok && !s.closing {
+	if s, ok := t.Dst.(*stream); ok && !t.RecvDone {
 		if t.WriteDstErr != nil {
 			err = t.WriteDstErr
 			s.CloseWithError(err)
@@ -846,6 +849,7 @@ func (l Local) AfterSend(t *proxy.Tunnel) (err error) {
 				s.Finish()
 			}
 		}
+		// log.Printf("after send stream [%d](%s) %v\n", s.id, t.Addr, err)
 	}
 	return err
 }
@@ -861,6 +865,9 @@ func (l Local) AfterReceive(t *proxy.Tunnel) (err error) {
 			s.SendBye()
 			s.CloseWithError(err)
 		}
+
+		// log.Printf("after receive stream [%d](%s) %v\n", s.id, t.Addr, err)
+
 	}
 	return
 }
@@ -876,17 +883,15 @@ func (r Remote) AfterDial(t *proxy.Tunnel, err error) error {
 }
 
 func (r Remote) AfterSend(t *proxy.Tunnel) (err error) {
-	if s, ok := t.Src.(*stream); ok {
+	if s, ok := t.Src.(*stream); ok && !t.RecvDone {
 		if t.ReadSrcErr != nil && t.ReadSrcErr != io.EOF {
 			err = t.ReadSrcErr
 		} else if t.WriteDstErr != nil {
 			err = t.WriteDstErr
 			s.SendError(err)
 		}
-
-		if err != nil {
-			s.CloseWithError(err)
-		}
+		// log.Printf("after send stream [%d](%s) %v\n", s.id, t.Addr, err)
+		s.CloseWithError(err)
 	}
 	return
 }
@@ -899,6 +904,7 @@ func (r Remote) AfterReceive(t *proxy.Tunnel) (err error) {
 		} else {
 			s.SendBye()
 		}
+		// log.Printf("after receive stream [%d](%s) %v\n", s.id, t.Addr, err)
 		s.CloseWithError(err)
 	}
 	return

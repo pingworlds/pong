@@ -31,7 +31,7 @@ func (t Taker) NewClient(cfg *tls.Config) (c *http.Client) {
 			DisableCompression: true,
 			AllowHTTP:          true,
 			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-				return tcp.Dialer.Dial(network, addr)
+				return xnet.Dialer.Dial(network, addr)
 			},
 		}}
 	} else {
@@ -41,7 +41,7 @@ func (t Taker) NewClient(cfg *tls.Config) (c *http.Client) {
 				TLSClientConfig:    cfg,
 				AllowHTTP:          false,
 				DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-					return tls.DialWithDialer(tcp.Dialer, network, addr, cfg)
+					return tls.DialWithDialer(xnet.Dialer, network, addr, cfg)
 				},
 			}}
 	}

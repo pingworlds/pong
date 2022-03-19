@@ -29,6 +29,7 @@ type omap struct {
 func (om *omap) Put(k, v interface{}) {
 	om.mu.Lock()
 	defer om.mu.Unlock()
+
 	if _, ok := om.m[k]; ok {
 		om.m[k] = v
 		return
@@ -41,6 +42,7 @@ func (om *omap) Put(k, v interface{}) {
 func (om *omap) Get(k interface{}) interface{} {
 	om.mu.Lock()
 	defer om.mu.Unlock()
+	
 	return om.m[k]
 }
 
@@ -75,6 +77,9 @@ func (om *omap) Remove(k interface{}) {
 }
 
 func (om *omap) RemoveAll(fn Filter) {	 
+	om.mu.Lock()
+	defer om.mu.Unlock()
+
 	for k, v := range om.m {
 		if fn != nil {
 			fn(v)
@@ -85,6 +90,9 @@ func (om *omap) RemoveAll(fn Filter) {
 }
 
 func (om *omap) ForEach(fn Filter) {
+	om.mu.Lock()
+	defer om.mu.Unlock()
+
 	for _, k := range om.keys {
 		if fn != nil && !fn(om.m[k]) {
 			return

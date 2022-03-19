@@ -3,13 +3,13 @@ package tcp
 import (
 	"crypto/tls"
 	"net"
-	"time"
+ 
 
 	"github.com/pingworlds/pong/xnet"
 	"github.com/pingworlds/pong/xnet/transport"
 )
 
-var Dialer = &net.Dialer{Timeout: time.Second * 10}
+// var Dialer = &net.Dialer{Timeout: time.Second * 10}
 
 func DialTCP(p *xnet.Point) (conn net.Conn, err error) {
 	addr := p.Host
@@ -21,11 +21,11 @@ func DialTCP(p *xnet.Point) (conn net.Conn, err error) {
 		}
 		addr = net.JoinHostPort(p.Host, port)
 	}
-	return Dialer.Dial("tcp", addr)
+	return xnet.Dialer.Dial("tcp", addr)
 }
 
 func DialUDP(p *xnet.Point) (conn net.Conn, err error) {
-	return Dialer.Dial("udp", p.Host)
+	return xnet.Dialer.Dial("udp", p.Host)
 }
 
 type TLSDialer struct {
@@ -34,7 +34,7 @@ type TLSDialer struct {
 
 func (d TLSDialer) Dial(p *xnet.Point) (conn net.Conn, err error) {
 	cfg := d.GetConfig(p)
-	return tls.DialWithDialer(Dialer, "tcp", p.Host, cfg.TLSConfig)
+	return tls.DialWithDialer(xnet.Dialer, "tcp", p.Host, cfg.TLSConfig)
 }
 
 func NewTLSDialer() *TLSDialer {

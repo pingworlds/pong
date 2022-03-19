@@ -281,7 +281,7 @@ func (c ClientConn) Read(b []byte) (int, error) {
 }
 
 func (c ClientConn) Close() error {
-	c.client.CloseIdleConnections()
+	// c.client.CloseIdleConnections()
 	c.pw.Close()
 	c.pr.Close()
 	return c.r.Close()

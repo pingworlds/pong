@@ -87,6 +87,7 @@ func Init(create bool) {
 	PreIpWhiteList = NewIPList(outDir + "/ip-white.txt")
 	PreIpRejectList = NewIPList(outDir + "/ip-reject.txt")
 
+	inited = true
 	if error := os.MkdirAll(outDir, 0777); error != nil {
 		log.Println(error)
 	}
@@ -160,6 +161,7 @@ func loadlist(isDomain bool, rules []*xnet.Rule, inDir string, create bool) { //
 func How(t byte, host string) (mode byte) {
 	mode = MODE_DIRECT
 	if !inited {
+		log.Println("rule not inited")
 		return
 	}
  

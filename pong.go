@@ -50,7 +50,7 @@ func main() {
 	//   proxy.CheckDohs(true, cfg.WorkDohs, "aliyun.com", nil)
 
 	if mode == "local" {
-		service.StartLocal()
+		service.StartLocal(nil)
 	} else if mode == "remote" {
 		service.StartRemote()
 	} else {

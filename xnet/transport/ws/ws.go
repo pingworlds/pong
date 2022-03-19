@@ -21,11 +21,14 @@ type Dialer struct {
 
 func (d Dialer) Dial(p *xnet.Point) (conn net.Conn, err error) {
 	cfg := d.GetConfig(p)
-	wd := websocket.DefaultDialer
-	if p.Transport == "wss" {
-		wd = &websocket.Dialer{TLSClientConfig: cfg.TLSConfig, HandshakeTimeout: 5 * time.Second}
+	wd := &websocket.Dialer{
+		NetDial: xnet.Dialer.Dial,
 	}
-	log.Println(cfg)
+	if p.Transport == "wss" {
+		wd = &websocket.Dialer{NetDial: xnet.Dialer.Dial,
+			TLSClientConfig: cfg.TLSConfig, HandshakeTimeout: 5 * time.Second}
+	}
+ 
 	var wc *websocket.Conn
 	if wc, _, err = wd.Dial(cfg.URL.String(), nil); err != nil {
 		return
@@ -39,7 +42,7 @@ type server struct {
 }
 
 func (s *server) Listen(p *xnet.Point, handle transport.Handle) (err error) {
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { 
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wc, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Println(err)

@@ -160,8 +160,7 @@ func (d DohClient) dialDoh(isDirect bool) (tc *tls.Conn, err error) {
 		}
 	}()
 	if isDirect {
-		// f = EmptyFilter
-		f = DefaultFilter
+		f = directPeer
 		err = directPeer.Open(tun)
 	} else {
 		f, err = locCtrl.Open(tun)
