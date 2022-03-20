@@ -755,9 +755,12 @@ func (f filter) BeforeSend(t *Tunnel) error {
 }
 
 func (f filter) AfterSend(t *Tunnel) (err error) {
+	if t.RecvDone {
+		return
+	}
 	if t.WriteDstErr != nil {
 		err = t.WriteDstErr
-	} else if !t.RecvDone && t.ReadSrcErr != nil && t.ReadSrcErr != io.EOF {
+	} else if t.ReadSrcErr != nil && t.ReadSrcErr != io.EOF {
 		err = t.ReadSrcErr
 	}
 	if err != nil {
