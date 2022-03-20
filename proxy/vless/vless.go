@@ -26,9 +26,9 @@ type vless struct {
 	*proxy.Proto
 }
 
-
 func (v vless) Handle(src net.Conn) {
 	defer src.Close()
+
 	method, addr, err := v.readMethod(src)
 	if err != nil {
 		log.Printf("read cmd %x %v\n", method, err)
@@ -126,14 +126,13 @@ func (r Remote) AfterDial(t *proxy.Tunnel, err error) error {
 	defer kit.Byte7.Put(&b)
 	var n = 2
 	if err != nil {
-		n = 4
+		n = 3
 		_ = append(b[:0],
 			0,
 			1,
-			0,
 			proxy.GetErrorCode(err))
 	} else {
-		_ = append(b[:0], 0)
+		_ = append(b[:0], 0, 0)
 	}
 	t.Src.Write(b[:n])
 
@@ -152,18 +151,21 @@ func (l Local) BeforeSend(t *proxy.Tunnel) error {
 func (l Local) BeforeReceive(t *proxy.Tunnel) (err error) {
 	b := *kit.Byte3.Get().(*[]byte)
 	defer kit.Byte3.Put(&b)
+
 	if _, err = l.ReadFull(t.Dst, b[:2]); err != nil {
 		return err
 	}
 	if b[1] == 1 {
-		l.ReadFull(t.Dst, b[:1])
+		if _, err = l.ReadFull(t.Dst, b[:1]); err != nil {
+			return
+		}
 		s := proxy.ErrTip[b[0]]
 		if s == "" {
 			s = proxy.ErrTip[proxy.ERR]
 		}
 		err = fmt.Errorf(s)
 	} else if b[1] > 0 {
-		io.CopyN(ioutil.Discard, t.Dst, int64(b[1]))
+		_, err = io.CopyN(ioutil.Discard, t.Dst, int64(b[1]))
 	}
 	return
 }
