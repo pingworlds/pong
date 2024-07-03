@@ -14,7 +14,7 @@ pong-go 是 pong 代理协议的 golang 语言开源实现。
 
 - linux shell
   
-    curl -o- -L https://github.com/pingworlds/pong-install//releases/latest/download/install.sh | bash
+    curl -o- -L https://raw.githubusercontent.com/pingworlds/pong-install/main/install.sh  | bash
 
   如果 shell 无法正确执行，请尝试下面的方法。
 
